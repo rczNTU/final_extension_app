@@ -1,0 +1,23 @@
+[
+  {
+    "trial_number": 1,
+    "hit": true,
+    "reaction_time_ms": 553,
+    "local_timestamp": 2136766.100000024,
+    "server_time": "2026-02-12T09:47:27.853932"
+  },
+  {
+    "trial_number": 2,
+    "hit": true,
+    "reaction_time_ms": 491.60000002384186,
+    "local_timestamp": 2142577.7000000477,
+    "server_time": "2026-02-12T09:47:33.664708"
+  },
+  {
+    "trial_number": 3,
+    "hit": true,
+    "reaction_time_ms": 406.10000002384186,
+    "local_timestamp": 2151496.8000000715,
+    "server_time": "2026-02-12T09:47:42.583330"
+  }
+]

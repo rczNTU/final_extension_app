@@ -1,0 +1,30 @@
+[
+  {
+    "trial_number": 1,
+    "hit": true,
+    "reaction_time_ms": 363,
+    "local_timestamp": 1472020.6000000238,
+    "server_time": "2026-02-12T09:36:23.113393"
+  },
+  {
+    "trial_number": 2,
+    "hit": true,
+    "reaction_time_ms": 422.60000002384186,
+    "local_timestamp": 1478493.8999999762,
+    "server_time": "2026-02-12T09:36:29.587192"
+  },
+  {
+    "trial_number": 3,
+    "hit": true,
+    "reaction_time_ms": 432.1999999284744,
+    "local_timestamp": 1485424.5,
+    "server_time": "2026-02-12T09:36:36.517292"
+  },
+  {
+    "trial_number": 4,
+    "hit": true,
+    "reaction_time_ms": 373.7999999523163,
+    "local_timestamp": 1490854.8999999762,
+    "server_time": "2026-02-12T09:36:41.946628"
+  }
+]

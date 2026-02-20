@@ -1,0 +1,19 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>RAF Demo</title>
+</head>
+<body>
+  <h1>Open console</h1>
+
+  <script>
+    function loop(time) {
+      console.log("Frame at:", time);
+
+      requestAnimationFrame(loop);
+    }
+
+    requestAnimationFrame(loop);
+  </script>
+</body>
+</html>

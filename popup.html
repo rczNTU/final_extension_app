@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html>
+<body>
+  <button id="start">Start</button>
+  <button id="stop">Stop</button>
+
+  <hr />
+
+  <div>
+    <button data-p="1">P1</button>
+    <button data-p="2">P2</button>
+    <button data-p="3">P3</button>
+    <button data-p="4">P4</button>
+    <button data-p="5">P5 (adaptive background)</button>
+  </div>
+
+  <hr />
+
+  <label>
+    Frequency:
+    <span id="freqVal"></span> Hz<br>
+    <input id="freq" type="range" min="1" max="60" step="0.5">
+  </label>
+
+  <label>
+    Mean Alpha:
+    <span id="meanAlphaVal"></span><br>
+    <input id="meanAlpha" type="range" min="0" max="0.8" step="0.01">
+  </label>
+
+  <label>
+    Mod Depth:
+    <span id="modDepthVal"></span><br>
+    <input id="modDepth" type="range" min="0.01" max="0.9" step="0.01">
+  </label>
+
+  <label>
+    Checker Size:
+    <span id="checkerSizeVal"></span> px<br>
+    <input id="checkerSize" type="range" min="1" max="20" step="1">
+  </label>
+
+  <script src="popup.js"></script>
+</body>
+</html>

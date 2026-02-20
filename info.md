@@ -1,0 +1,1 @@
+must include "permissions": ["activeTab", "storage"] storage in permissions if not error when geting from cache

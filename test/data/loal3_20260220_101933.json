@@ -1,0 +1,45 @@
+{
+  "meta": {
+    "server_received": "2026-02-20T10:19:33.405683",
+    "block_start_perf": 11160.699999809265,
+    "block_start_wall": 1771582730089,
+    "block_end_perf": 54471.09999990463,
+    "total_trials": 4,
+    "max_events": 30,
+    "response_window_ms": 600,
+    "isi_range": [
+      5000,
+      9000
+    ]
+  },
+  "logs": [
+    {
+      "trial_number": 1,
+      "hit": false,
+      "reaction_time_ms": null,
+      "trial_start": 19030.199999809265,
+      "log_time": 19631.89999985695
+    },
+    {
+      "trial_number": 2,
+      "hit": true,
+      "reaction_time_ms": 368.7000000476837,
+      "trial_start": 27252.199999809265,
+      "log_time": 27620.89999985695
+    },
+    {
+      "trial_number": 3,
+      "hit": false,
+      "reaction_time_ms": null,
+      "trial_start": 36385.799999952316,
+      "log_time": 37032.199999809265
+    },
+    {
+      "trial_number": 4,
+      "hit": false,
+      "reaction_time_ms": 603.1000001430511,
+      "trial_start": 44345.199999809265,
+      "log_time": 44948.299999952316
+    }
+  ]
+}
