@@ -1,12 +1,11 @@
 // ===============================
 // MINIMAL CONTENT SCRIPT (P1–P4)
-// - Pattern 3/4 use integrated square over real t0..t1
-// - Pattern 4 uses alphaScale + meanScale to reduce opacity
-// - Keeps storage hydrate + messaging
-// - Removes all debug/jitter logging
+// - Pattern 4 simplified + strengthened
+// - Uses integrated sine
+// - Full screen luminance (no checkerboard)
 // ===============================
 
-// ---- Params (defaults; overridden by chrome.storage) ----
+// ---- Params ----
 let FLICKER_HZ = 40;
 let meanAlpha = 0.3;
 let CHECKER_SIZE = 8;
@@ -14,17 +13,13 @@ let MOD_DEPTH = 0.3;
 
 let currentPattern = 1;
 
-// Pattern 4 tuning
-const P4_ALPHA_SCALE = 1; // modulation depth scaling
-const P4_MEAN_SCALE  = 1; // base opacity scaling (makes it less opaque)
-let p4CycleAccum = 0;
 // ---- Runtime ----
 let running = false;
 let rafId = null;
 let lastNowSec = 0;
 
-let phase = 0;    // P2
-let acc = 0;      // P1
+let phase = 0;
+let acc = 0;
 let squareOn = true;
 
 // ---- Canvas ----
@@ -32,40 +27,21 @@ let canvas = null;
 let ctx = null;
 let dpr = 1;
 let img = null, imgW = 0, imgH = 0;
-// ---- Pattern4 debug ----
-const P4_DEBUG = true;
-const P4_LOG_MS = 2000;
 
-let p4Frames = 0;
-let p4SignFlips = 0;
-let p4LastSign = 0;
-
-let p4M_sum = 0;
-let p4M_abs_sum = 0;
-let p4M_near1 = 0;     // |M| > 0.9
-let p4M_mid = 0;       // 0.1 < |M| <= 0.9
-let p4M_near0 = 0;     // |M| <= 0.1
-
-let p4LastLogMs = performance.now();
-const P1_DEBUG = true;
-const P1_LOG_MS = 2000;
-let p1Frames = 0, p1Flips = 0, p1LastLogMs = performance.now();
-let p1PrevSquare = null;
-let p1CycleAccum = 0;   // true cycles (ground truth)
-let p1PrevFrameTime = null;
-let p1JitterCount = 0;
-const P1_JITTER_THRESH = 0.003; // 3ms deviation
 init();
+
+// ===============================
+// Integrated sine (KEEP)
+// ===============================
 function integratedSineM(t0, t1, f) {
   const dt = t1 - t0;
   if (dt <= 0 || f <= 0) return 0;
 
   const w = 2 * Math.PI * f;
-  const denom = w * dt;
-  if (denom < 1e-6) return Math.sin(w * t1);
-
-  return (Math.cos(w * t0) - Math.cos(w * t1)) / denom;
+  return (Math.cos(w * t0) - Math.cos(w * t1)) / (w * dt);
 }
+
+// ===============================
 function init() {
   hydrate(true);
   window.addEventListener("resize", resizeCanvas);
@@ -91,6 +67,9 @@ function hydrate(shouldStart = false) {
   );
 }
 
+// ===============================
+// Canvas
+// ===============================
 function ensureCanvas() {
   if (canvas) return;
 
@@ -127,18 +106,16 @@ function clamp01(x) {
   return x < 0 ? 0 : x > 1 ? 1 : x;
 }
 
-// function drawFullScreen(alpha) {
-//   ctx.clearRect(0, 0, canvas.width, canvas.height);
-//   ctx.globalAlpha = clamp01(alpha);
-//   ctx.fillStyle = "white";
-//   ctx.fillRect(0, 0, canvas.width, canvas.height);
-//   ctx.globalAlpha = 1;
-// }
-function drawFullScreen(M) {
-  // M in [-1, 1]
+// ===============================
+// DRAW FUNCTIONS
+// ===============================
 
-  const A = MOD_DEPTH; // amplitude (0–0.5 recommended)
-  const L = clamp01(0.5 + A * M);  // luminance in [0,1]
+// FULL SCREEN luminance (used by Pattern 4)
+function drawFullScreen(M) {
+  const m = Math.max(-1, Math.min(1, M));
+
+  // FULL CONTRAST (IMPORTANT)
+  const L = 0.5 + 0.5 * m; // 0..1
 
   const v = Math.round(L * 255);
 
@@ -146,8 +123,8 @@ function drawFullScreen(M) {
   ctx.fillRect(0, 0, canvas.width, canvas.height);
 }
 
-// Checkerboard where alpha is modulated by M in [-1..1]
-function drawCheckerboard(M, alphaScale = 1.0, meanScale = 1.0) {
+// Checkerboard (unchanged)
+function drawCheckerboard(M) {
   const w = canvas.width, h = canvas.height;
 
   if (!img || imgW !== w || imgH !== h) {
@@ -158,7 +135,7 @@ function drawCheckerboard(M, alphaScale = 1.0, meanScale = 1.0) {
   const data = img.data;
   const scalePx = Math.max(1, Math.floor(CHECKER_SIZE * dpr));
   const m = Math.max(-1, Math.min(1, M));
-  const base = meanAlpha * meanScale;
+  const base = meanAlpha;
 
   let k = 0;
   for (let y = 0; y < h; y++) {
@@ -168,7 +145,7 @@ function drawCheckerboard(M, alphaScale = 1.0, meanScale = 1.0) {
       const even = ((ix + iy) & 1) === 0;
       const sgn = even ? +1 : -1;
 
-      const a = clamp01(base + (MOD_DEPTH * alphaScale) * sgn * m);
+      const a = clamp01(base + MOD_DEPTH * sgn * m);
       const v = even ? 255 : 0;
 
       data[k++] = v;
@@ -180,18 +157,20 @@ function drawCheckerboard(M, alphaScale = 1.0, meanScale = 1.0) {
 
   ctx.putImageData(img, 0, 0);
 }
+
+// Pattern 1 drawing (unchanged)
 function drawFullScreenBW(isWhite) {
   ctx.fillStyle = isWhite ? "white" : "black";
   ctx.fillRect(0, 0, canvas.width, canvas.height);
 }
-// ---- Patterns ----
-//BRIGHTNESS IF FIXED FOR P1
+
+// ===============================
+// PATTERNS
+// ===============================
+
+// Pattern 1 (unchanged)
 function pattern1(dt) {
   acc += dt;
-
-  // ---- ground truth cycles ----
-  p1CycleAccum += dt * FLICKER_HZ;
-
   const half = 1 / (FLICKER_HZ * 2);
 
   while (acc >= half) {
@@ -202,12 +181,13 @@ function pattern1(dt) {
   return { kind: "fullBW", isWhite: squareOn };
 }
 
+// Pattern 2 (unchanged)
 function pattern2(dt) {
   phase += 2 * Math.PI * FLICKER_HZ * dt;
   return { kind: "checker", M: Math.sin(phase) };
 }
 
-// integrate square wave over [t0, t1]
+// Pattern 3 (unchanged)
 function integratedSquareM(t0, t1, f) {
   const dt = t1 - t0;
   if (dt <= 0 || f <= 0) return 0;
@@ -230,103 +210,37 @@ function integratedSquareM(t0, t1, f) {
     if (phaseLocal >= period) phaseLocal -= period;
   }
 
-  return (onTime / dt) * 2 - 1; // [-1..1]
+  return (onTime / dt) * 2 - 1;
 }
 
 function pattern3(t0, t1) {
   return { kind: "checker", M: integratedSquareM(t0, t1, FLICKER_HZ) };
 }
 
-// function pattern4(t0, t1) {
-//   return {
-//     kind: "checker",
-//     M: integratedSquareM(t0, t1, FLICKER_HZ),
-//     alphaScale: P4_ALPHA_SCALE,
-//     meanScale: P4_MEAN_SCALE
-//   };
-// }
+// ===============================
+// NEW SIMPLE STRONG PATTERN 4
+// ===============================
 function pattern4(t0, t1) {
   const M = integratedSineM(t0, t1, FLICKER_HZ);
 
-  if (P4_DEBUG) {
-    p4Frames++;
-
-    // -------- robust sign detection --------
-    const EPS = 1e-6;
-    const s = M > EPS ? 1 : (M < -EPS ? -1 : 0);
-
-    if (s !== 0) {
-      if (p4LastSign !== 0 && s !== p4LastSign) {
-        p4SignFlips++;
-      }
-      p4LastSign = s;
-    }
-
-    // -------- stats --------
-    const absM = Math.abs(M);
-    p4M_sum += M;
-    p4M_abs_sum += absM;
-
-    if (absM > 0.9) p4M_near1++;
-    else if (absM > 0.1) p4M_mid++;
-    else p4M_near0++;
-
-    // -------- true cycles (ground truth) --------
-    p4CycleAccum += (t1 - t0) * FLICKER_HZ;
-
-    const now = performance.now();
-    if (now - p4LastLogMs >= P4_LOG_MS) {
-      const secs = (now - p4LastLogMs) / 1000;
-
-      const fps = p4Frames / secs;
-
-      // what the rendered signal is doing
-      const estHz_sig = p4SignFlips / (2 * secs);
-
-      // what we intended (ground truth)
-      const estHz_true = p4CycleAccum / secs;
-
-      const meanM = p4M_sum / p4Frames;
-      const meanAbsM = p4M_abs_sum / p4Frames;
-
-      console.log(
-        `[P4] fps=${fps.toFixed(1)} | estHz(sig)≈${estHz_sig.toFixed(2)} | estHz(true)≈${estHz_true.toFixed(2)} | ` +
-        `meanM=${meanM.toFixed(3)} | mean|M|=${meanAbsM.toFixed(3)} | ` +
-        `|M| bins: >0.9 ${(100*p4M_near1/p4Frames).toFixed(0)}% / ` +
-        `mid ${(100*p4M_mid/p4Frames).toFixed(0)}% / ` +
-        `near0 ${(100*p4M_near0/p4Frames).toFixed(0)}% | ` +
-        `alphaScale=${P4_ALPHA_SCALE} meanScale=${P4_MEAN_SCALE} ` +
-        `meanAlpha=${meanAlpha} modDepth=${MOD_DEPTH} freq=${FLICKER_HZ}`
-      );
-
-      // -------- reset window --------
-      p4Frames = 0;
-      p4SignFlips = 0;
-      p4M_sum = 0;
-      p4M_abs_sum = 0;
-      p4M_near1 = 0;
-      p4M_mid = 0;
-      p4M_near0 = 0;
-      p4CycleAccum = 0;
-      p4LastSign = 0;
-      p4LastLogMs = now;
-    }
-  }
-
   return {
-    kind: "checker",
-    M,
-    alphaScale: P4_ALPHA_SCALE,
-    meanScale: P4_MEAN_SCALE
+    kind: "full",
+    M
   };
 }
 
-// ---- Main loop ----
+// ===============================
+// MAIN LOOP
+// ===============================
 function loop(nowMs) {
   if (!running) return;
 
   const nowSec = nowMs / 1000;
-  if (lastNowSec === 0) { lastNowSec = nowSec; rafId = requestAnimationFrame(loop); return; }
+  if (lastNowSec === 0) {
+    lastNowSec = nowSec;
+    rafId = requestAnimationFrame(loop);
+    return;
+  }
 
   const t0 = lastNowSec;
   const t1 = nowSec;
@@ -341,79 +255,31 @@ function loop(nowMs) {
     case 4: cmd = pattern4(t0, t1); break;
     default: cmd = pattern1(dt);
   }
-  if (P1_DEBUG && currentPattern === 1 && cmd.kind === "fullBW") {
-    p1Frames++;
-
-    // ----   actual visible  flicker flips ----
-    if (p1PrevSquare !== null && cmd.isWhite !== p1PrevSquare) {
-      p1Flips++;
-    }
-    p1PrevSquare = cmd.isWhite;
-
-    // ---- frame timing ----
-    if (p1PrevFrameTime !== null) {
-      const frameDt = t1 - p1PrevFrameTime;
-      const ideal = 1 / 60;
-
-      if (Math.abs(frameDt - ideal) > P1_JITTER_THRESH) {
-        p1JitterCount++;
-      }
-    }
-    p1PrevFrameTime = t1;
-
-    // ---- logging ----
-    const now = performance.now();
-    if (now - p1LastLogMs >= P1_LOG_MS) {
-      const secs = (now - p1LastLogMs) / 1000;
-
-      const fps = p1Frames / secs;
-
-      // what user actually sees
-      const estHz_sig = (p1Flips / 2) / secs;
-
-      // what you intended
-      const estHz_true = p1CycleAccum / secs;
-
-      const jitterPct = (p1JitterCount / p1Frames) * 100;
-
-      console.log(
-        `[P1] fps=${fps.toFixed(1)} | ` +
-        `estHz(sig)≈${estHz_sig.toFixed(2)} | ` +
-        `estHz(true)≈${estHz_true.toFixed(2)} | ` +
-        `jitter=${jitterPct.toFixed(1)}% | freq=${FLICKER_HZ}`
-      );
-
-      // ---- reset ----
-      p1Frames = 0;
-      p1Flips = 0;
-      p1CycleAccum = 0;
-      p1JitterCount = 0;
-
-      p1PrevSquare = null;
-      p1PrevFrameTime = null;
-      p1LastLogMs = now;
-    }
-  }
 
   if (cmd.kind === "fullBW") {
-      drawFullScreenBW(cmd.isWhite);
-    } else if (cmd.kind === "full") {
-      drawFullScreen(cmd.alpha);
-    } else {
-      drawCheckerboard(cmd.M, cmd.alphaScale ?? 1.0, cmd.meanScale ?? 1.0);
-    }
+    drawFullScreenBW(cmd.isWhite);
+  } else if (cmd.kind === "full") {
+    drawFullScreen(cmd.M);
+  } else {
+    drawCheckerboard(cmd.M);
+  }
 
   rafId = requestAnimationFrame(loop);
 }
 
-// ---- Start/Stop ----
+// ===============================
+// START / STOP
+// ===============================
 function start(pattern = currentPattern) {
   ensureCanvas();
   resizeCanvas();
 
   currentPattern = pattern;
-  console.log(`[START] pattern=${currentPattern} meanAlpha=${meanAlpha} modDepth=${MOD_DEPTH} checkerSize=${CHECKER_SIZE} freq=${FLICKER_HZ}`);
-  phase = 0; acc = 0; squareOn = true;
+  console.log(`[START] pattern=${currentPattern} freq=${FLICKER_HZ}`);
+
+  phase = 0;
+  acc = 0;
+  squareOn = true;
 
   running = true;
   lastNowSec = 0;
@@ -426,7 +292,9 @@ function stop() {
   if (ctx && canvas) ctx.clearRect(0, 0, canvas.width, canvas.height);
 }
 
-// ---- Messaging ----
+// ===============================
+// MESSAGING
+// ===============================
 chrome.runtime.onMessage.addListener((msg) => {
   if (msg?.type === "START") {
     chrome.storage.local.set(
@@ -447,9 +315,8 @@ chrome.runtime.onMessage.addListener((msg) => {
 
   if (msg?.type === "SET_PARAMS") {
     if (typeof msg.meanAlpha === "number") meanAlpha = msg.meanAlpha;
-
-    if (typeof msg.modDepth === "number") { MOD_DEPTH = msg.modDepth; img = null; }
-    if (typeof msg.checkerSize === "number") { CHECKER_SIZE = msg.checkerSize; img = null; }
+    if (typeof msg.modDepth === "number") MOD_DEPTH = msg.modDepth;
+    if (typeof msg.checkerSize === "number") CHECKER_SIZE = msg.checkerSize;
     if (typeof msg.freq === "number") FLICKER_HZ = msg.freq;
 
     chrome.storage.local.set({
