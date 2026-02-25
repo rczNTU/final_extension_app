@@ -4,6 +4,12 @@ let meanAlpha = 0.3;
 let MOD_DEPTH = 0.3;
 let currentPattern = 1;
 
+let CHECK_SIZE = 12; // default (8–16 best)
+// ---- Pattern 4 (noise checker) ----
+let noisePattern = null;
+let noiseW = 0;
+let noiseH = 0;
+
 // ---- Runtime ----
 let running = false;
 let rafId = null;
@@ -49,6 +55,32 @@ init();
 // ===============================
 // PARAM SAFETY WARNINGS
 // ===============================
+function generateNoisePattern() {
+  if (!canvas) return;
+
+  const w = Math.ceil(canvas.width / CHECK_SIZE);
+  const h = Math.ceil(canvas.height / CHECK_SIZE);
+
+  const total = w * h;
+  const arr = new Int8Array(total);
+
+  // fill half +1, half -1
+  for (let i = 0; i < total; i++) {
+    arr[i] = i < total / 2 ? 1 : -1;
+  }
+
+  // shuffle (Fisher-Yates)
+  for (let i = total - 1; i > 0; i--) {
+    const j = (Math.random() * (i + 1)) | 0;
+    const tmp = arr[i];
+    arr[i] = arr[j];
+    arr[j] = tmp;
+  }
+
+  noisePattern = arr;
+  noiseW = w;
+  noiseH = h;
+}
 function warnIfUnsafe() {
   // Pattern 2: overlay alpha = meanAlpha ± MOD_DEPTH
   const p2Min = meanAlpha - MOD_DEPTH;
@@ -160,6 +192,8 @@ function resizeCanvas() {
   if (canvas.width !== w || canvas.height !== h) {
     canvas.width = w;
     canvas.height = h;
+
+    generateNoisePattern(); 
   }
 }
 
@@ -266,60 +300,32 @@ function pattern1(dt) {
   return { kind: "fullBW", isWhite: squareOn };
 }
 
-function pattern2(dt) {
-  phase += 2 * Math.PI * FLICKER_HZ * dt;
-  if (phase > Math.PI * 2) phase -= Math.PI * 2;
+// function pattern2(dt) {
+//   phase += 2 * Math.PI * FLICKER_HZ * dt;
+//   if (phase > Math.PI * 2) phase -= Math.PI * 2;
+
+//   return {
+//     kind: "overlayAlpha",
+//     M: Math.sin(phase)
+//   };
+// }
+function pattern2(t0, t1) {
+  const M = integratedSineM(t0, t1, FLICKER_HZ);
 
   return {
     kind: "overlayAlpha",
-    M: Math.sin(phase)
+    M: M
   };
 }
 
-function pattern3() {
-  return { kind: "full", M: 0 };
+function pattern3(t0,t1) {
+  const M = integratedSineM(t0, t1, FLICKER_HZ);
+  return {kind: "brightness", M: M };
 }
-
 function pattern4(t0, t1) {
   const M = integratedSineM(t0, t1, FLICKER_HZ);
-
-  if (P4_DEBUG) {
-    p4Frames++;
-
-    const EPS = 1e-6;
-    const s = M > EPS ? 1 : (M < -EPS ? -1 : 0);
-
-    if (s !== 0) {
-      if (p4LastSign !== 0 && s !== p4LastSign) {
-        p4SignFlips++;
-      }
-      p4LastSign = s;
-    }
-
-    p4CycleAccum += (t1 - t0) * FLICKER_HZ;
-
-    const now = performance.now();
-
-    if (now - p4LastLogMs >= P4_LOG_MS) {
-      const secs = (now - p4LastLogMs) / 1000;
-
-      console.log(
-        `[P4] fps=${(p4Frames / secs).toFixed(1)} | ` +
-        `sigHz=${(p4SignFlips / (2 * secs)).toFixed(2)} | ` +
-        `trueHz=${(p4CycleAccum / secs).toFixed(2)}`
-      );
-
-      p4Frames = 0;
-      p4SignFlips = 0;
-      p4CycleAccum = 0;
-      p4LastSign = 0;
-      p4LastLogMs = now;
-    }
-  }
-
-  return { kind: "full", M };
+  return { kind: "noise", M };
 }
-
 // ---- Loop ----
 function loop(nowMs) {
   if (!running) return;
@@ -341,17 +347,25 @@ function loop(nowMs) {
 
   switch (currentPattern) {
     case 1: cmd = pattern1(dt); break;
-    case 2: cmd = pattern2(dt); break;
-    case 3: cmd = pattern3(); break;
+    // case 2: cmd = pattern2(dt); break;
+    case 2: cmd = pattern2(t0,t1); break;
+    case 3: cmd = pattern3(t0,t1); break;
     case 4: cmd = pattern4(t0, t1); break;
     default: cmd = pattern1(dt);
   }
-
   if (cmd.kind === "fullBW") {
-    drawFullScreenBW(cmd.isWhite);
+  drawFullScreenBW(cmd.isWhite);
+
   } else if (cmd.kind === "overlayAlpha") {
     drawOverlayAlpha(cmd.M);
-  } else {
+
+  } else if (cmd.kind === "brightness") {
+    drawBrightness(cmd.M);
+
+  } else if (cmd.kind === "chromatic") {
+    drawChromatic(cmd.M);
+
+  } else if (cmd.kind === "full") {
     drawFullScreen(cmd.M, cmd.forceFull);
   }
 
@@ -395,6 +409,7 @@ function stop() {
   if (overlay) {
     overlay.style.opacity = 0;
   }
+   document.documentElement.style.filter = "";
 }
 
 // ---- Messaging ----
