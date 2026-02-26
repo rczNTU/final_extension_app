@@ -5,6 +5,7 @@
 // 2 = Full-screen luminance modulation (Andersen interpolated square)
 // 3 = Neutral-grey overlay opacity modulation (Andersen interpolated square)
 // 4 = Full-screen luminance modulation (integrated sine)
+// 5 = Neutral-grey overlay opacity modulation (integrated sine)
 // ===============================
 
 // ---- Params ----
@@ -81,6 +82,15 @@ let p1JitterCount = 0;
 
 const P1_JITTER_THRESH = 0.003; // seconds (3 ms)
 const DISPLAY_GAMMA = 2.2;
+const DEFAULT_PARAMS = {
+  1: { meanAlpha: 0.5, modDepth: 0.5, freq: 40, checkerSize: 12 }, // max contrast
+  2: { meanAlpha: 0.5, modDepth: 0.5, freq: 40, checkerSize: 12 },
+  3: { meanAlpha: 0.3, modDepth: 0.3, freq: 40, checkerSize: 12 }, // overlay safe
+  4: { meanAlpha: 0.5, modDepth: 0.4, freq: 40, checkerSize: 12 },
+  5: { meanAlpha: 0.3, modDepth: 0.3, freq: 40, checkerSize: 12 },
+  6: { meanAlpha: 0.5, modDepth: 0.5, freq: 40, checkerSize: 12 },
+  7: { meanAlpha: 0.5, modDepth: 0.3, freq: 40, checkerSize: 12 },
+};
 
 // ---- Init ----
 init();
@@ -95,13 +105,33 @@ function init() {
 // ===============================
 function hydrate(shouldStart = false) {
   chrome.storage.local.get(
-    ["autoStart", "meanAlpha", "modDepth", "freq", "currentPattern", "checkerSize"],
+    ["autoStart", "patternParams", "currentPattern"],
     (s) => {
-      if (typeof s.meanAlpha === "number") meanAlpha = s.meanAlpha;
-      if (typeof s.modDepth === "number") MOD_DEPTH = s.modDepth;
-      if (typeof s.freq === "number") FLICKER_HZ = s.freq;
-      if (typeof s.currentPattern === "number") currentPattern = s.currentPattern;
-      if (typeof s.checkerSize === "number") CHECKER_SIZE = s.checkerSize;
+      currentPattern = s.currentPattern ?? 1;
+
+      const all = s.patternParams || {};
+
+      // ---- INIT missing patterns ----
+      let changed = false;
+
+      for (const pid in DEFAULT_PARAMS) {
+        if (!all[pid]) {
+          all[pid] = { ...DEFAULT_PARAMS[pid] };
+          changed = true;
+        }
+      }
+
+      if (changed) {
+        chrome.storage.local.set({ patternParams: all });
+        console.log("[INIT] Filled missing pattern defaults");
+      }
+
+      const p = all[currentPattern];
+
+      meanAlpha = p.meanAlpha;
+      MOD_DEPTH = p.modDepth;
+      FLICKER_HZ = p.freq;
+      CHECKER_SIZE = p.checkerSize;
 
       warnIfUnsafe();
 
@@ -446,6 +476,12 @@ function pattern4(t0, t1) {
     M: integratedSineM(t0, t1, FLICKER_HZ)
   };
 }
+function pattern5(t0, t1) {
+  return {
+    kind: "overlayAlpha",
+    M: integratedSineM(t0, t1, FLICKER_HZ)
+  };
+}
 function pattern6(dt) {
   const fps = dt > 0 ? 1 / dt : 60;
 
@@ -626,6 +662,9 @@ function loop(nowMs) {
   case 4:
     cmd = pattern4(t0, t1);
     break;
+  case 5:
+    cmd = pattern5(t0, t1);
+    break;
   case 6:
     cmd = pattern6(dt);
     break;
@@ -787,34 +826,78 @@ chrome.runtime.onMessage.addListener((msg) => {
   }
 
   if (msg.type === "SET_PATTERN") {
-    currentPattern = Number(msg.pattern) || 1;
-    chrome.storage.local.set({ currentPattern });
+  currentPattern = Number(msg.pattern) || 1;
+
+  chrome.storage.local.get(["patternParams"], (s) => {
+    const all = s.patternParams || {};
+    const p = all[currentPattern] || DEFAULT_PARAMS[currentPattern];
+
+    // LOAD that pattern's params
+    meanAlpha = p.meanAlpha;
+    MOD_DEPTH = p.modDepth;
+    FLICKER_HZ = p.freq;
+    CHECKER_SIZE = p.checkerSize;
+
+    console.log("[SWITCH] Pattern", currentPattern, p);
+
     warnIfUnsafe();
-    return;
-  }
+
+    chrome.storage.local.set({ currentPattern });
+    resetRuntimeState();
+  });
+
+  return;
+}
 
   if (msg.type === "SET_PARAMS") {
-    if (typeof msg.meanAlpha === "number") meanAlpha = msg.meanAlpha;
-    if (typeof msg.modDepth === "number") MOD_DEPTH = msg.modDepth;
-    if (typeof msg.freq === "number") FLICKER_HZ = msg.freq;
-    if (typeof msg.checkerSize === "number") CHECKER_SIZE = msg.checkerSize;
+  if (typeof msg.meanAlpha === "number") meanAlpha = msg.meanAlpha;
+  if (typeof msg.modDepth === "number") MOD_DEPTH = msg.modDepth;
+  if (typeof msg.freq === "number") FLICKER_HZ = msg.freq;
+  if (typeof msg.checkerSize === "number") CHECKER_SIZE = msg.checkerSize;
 
-    // Regenerate P4 pattern/buffer when checker size changes or canvas exists
-    if (canvas) {
-      noiseImageData = null;
-      generateNoisePattern();
-    }
+  // Update noise if needed
+  if (canvas) {
+    noiseImageData = null;
+    generateNoisePattern();
+  }
 
-    warnIfUnsafe();
+  warnIfUnsafe();
 
-    chrome.storage.local.set({
+  // SAVE PER PATTERN
+  chrome.storage.local.get(["patternParams"], (s) => {
+    const all = s.patternParams || {};
+
+    all[currentPattern] = {
       meanAlpha,
       modDepth: MOD_DEPTH,
       freq: FLICKER_HZ,
       checkerSize: CHECKER_SIZE,
-    });
+    };
 
-    // If currently running, changes apply next frame automatically.
-    return;
-  }
+    chrome.storage.local.set({ patternParams: all });
+
+    console.log("[SAVE] Pattern", currentPattern, all[currentPattern]);
+  });
+
+  return;
+}
+if (msg.type === "RESET_DEFAULT") {
+  const def = DEFAULT_PARAMS[currentPattern];
+
+  meanAlpha = def.meanAlpha;
+  MOD_DEPTH = def.modDepth;
+  FLICKER_HZ = def.freq;
+  CHECKER_SIZE = def.checkerSize;
+
+  warnIfUnsafe();
+
+  chrome.storage.local.get(["patternParams"], (s) => {
+    const all = s.patternParams || {};
+    all[currentPattern] = { ...def };
+
+    chrome.storage.local.set({ patternParams: all });
+  });
+
+  console.log("[RESET] Pattern", currentPattern, def);
+}
 });

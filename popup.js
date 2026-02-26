@@ -6,7 +6,7 @@ function send(msg) {
 }
 
 
-
+let isLoading = false;
 const freq = document.getElementById("freq");
 const meanAlpha = document.getElementById("meanAlpha");
 const modDepth = document.getElementById("modDepth");
@@ -36,7 +36,10 @@ function sendParams() {
 }
 
 [freq, meanAlpha, modDepth, checkerSize].forEach(s => {
-  s.oninput = sendParams;
+  s.oninput = () => {
+    if (isLoading) return; 
+    sendParams();
+  };
 });
 
 document.getElementById("start").onclick = () => send({ type: "START" });
@@ -48,24 +51,55 @@ document.querySelectorAll("button[data-p]").forEach(btn => {
     console.log("[POPUP] Pattern button clicked:", p);
 
     send({
+      type: "SET_PATTERN",
+      pattern: p
+    });
+
+    send({
       type: "START",
       pattern: p
     });
   };
 });
 
+function loadUIFromStorage() {
+  chrome.storage.local.get(["patternParams", "currentPattern"], (s) => {
+    isLoading = true;
 
+    const pat = s.currentPattern ?? 1;
+    const all = s.patternParams || {};
 
-// restore slider values
-chrome.storage.local.get(
-  ["freq", "meanAlpha", "modDepth", "checkerSize"],
-  (s) => {
-    freq.value = s.freq ?? 40;
-    meanAlpha.value = s.meanAlpha ?? 0.10;
-    modDepth.value = s.modDepth ?? 0.05;
-    checkerSize.value = s.checkerSize ?? 8;
+    const DEFAULT_PARAMS = {
+      1: { meanAlpha: 0.5, modDepth: 0.5, freq: 40, checkerSize: 12 },
+      2: { meanAlpha: 0.5, modDepth: 0.5, freq: 40, checkerSize: 12 },
+      3: { meanAlpha: 0.3, modDepth: 0.3, freq: 40, checkerSize: 12 },
+      4: { meanAlpha: 0.5, modDepth: 0.4, freq: 40, checkerSize: 12 },
+      5: { meanAlpha: 0.3, modDepth: 0.3, freq: 40, checkerSize: 12 },
+      6: { meanAlpha: 0.5, modDepth: 0.5, freq: 40, checkerSize: 12 },
+      7: { meanAlpha: 0.5, modDepth: 0.3, freq: 40, checkerSize: 12 },
+    };
+
+    const p = all[pat] || DEFAULT_PARAMS[pat];
+
+    freq.value = p.freq;
+    meanAlpha.value = p.meanAlpha;
+    modDepth.value = p.modDepth;
+    checkerSize.value = p.checkerSize;
+
     updateLabels();
-    sendParams();
 
+    isLoading = false;
+
+    console.log("[POPUP LOAD]", pat, p);
+  });
+}
+document.addEventListener("DOMContentLoaded", () => {
+  loadUIFromStorage();
+});
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area !== "local") return;
+
+  if (changes.patternParams || changes.currentPattern) {
+    loadUIFromStorage();
   }
-);
+});
