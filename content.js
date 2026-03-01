@@ -13,34 +13,7 @@ let FLICKER_HZ = 40;
 let meanAlpha = 0.3;
 let MOD_DEPTH = 0.3;
 let currentPattern = 1;
-let CHECKER_SIZE = 12; // default (8–16 often good)
-
-// ---- Pattern 4 (noise checker) ----
-let noisePattern = null;
-let noiseW = 0;
-let noiseH = 0;
-let noiseImageData = null;
-
-// ---- Pattern 6 (phase scheduling) ----
-let p6Phase = 0;
-let p6Frames = 0;
-let p6LastLogMs = performance.now();
-let p6SignFlips = 0;
-let p6LastSign = 0;
-let p6FlipState = 1;   // +1 / -1
-
-const P6_DEBUG = true;
-const P6_LOG_MS = 2000;
-const metLogger = window.ContrastMetrics?.createContrastRmsLogger({ logMs: 2000 });
-
-// ---- P7 DEBUG ----
-const P7_DEBUG = true;
-const P7_LOG_MS = 2000;
-
-let p7Frames = 0;
-let p7LastLogMs = performance.now();
-let p7MaxLeak = 0;
-let p7MinLeak = 0;
+let CHECKER_SIZE = 12; // kept for compatibility (unused now)
 
 // ---- Runtime ----
 let running = false;
@@ -64,32 +37,31 @@ const P4_DEBUG = true;
 const P4_LOG_MS = 2000;
 
 let p4Frames = 0;
-let p4SignFlips = 0;
-let p4LastSign = 0;
-let p4CycleAccum = 0;
 let p4LastLogMs = performance.now();
 
 const P1_DEBUG = true;
 const P1_LOG_MS = 2000;
 
+//p6
+let adaptiveBaseLinear = 0.5;  // linear luminance center
+
 let p1Frames = 0;
 let p1Flips = 0;
 let p1LastLogMs = performance.now();
 let p1PrevSquare = null;
-let p1CycleAccum = 0;
 let p1PrevFrameTime = null;
 let p1JitterCount = 0;
 
 const P1_JITTER_THRESH = 0.003; // seconds (3 ms)
 const DISPLAY_GAMMA = 2.2;
+
 const DEFAULT_PARAMS = {
   1: { meanAlpha: 0.5, modDepth: 0.5, freq: 40, checkerSize: 12 }, // max contrast
   2: { meanAlpha: 0.5, modDepth: 0.5, freq: 40, checkerSize: 12 },
   3: { meanAlpha: 0.3, modDepth: 0.3, freq: 40, checkerSize: 12 }, // overlay safe
   4: { meanAlpha: 0.5, modDepth: 0.4, freq: 40, checkerSize: 12 },
   5: { meanAlpha: 0.3, modDepth: 0.3, freq: 40, checkerSize: 12 },
-  6: { meanAlpha: 0.5, modDepth: 0.5, freq: 40, checkerSize: 12 },
-  7: { meanAlpha: 0.5, modDepth: 0.3, freq: 40, checkerSize: 12 },
+  6: { meanAlpha: 0.5, modDepth: 0.1, freq: 40, checkerSize: 12 },
 };
 
 // ---- Init ----
@@ -144,52 +116,130 @@ function hydrate(shouldStart = false) {
 }
 
 // ===============================
+// Contrast UI
+// ===============================
+function computeContrast() {
+  const pat = currentPattern;
+
+  let min, max, type;
+
+  if (pat === 2 || pat === 4) {
+    // luminance
+    min = 0.5 - MOD_DEPTH;
+    max = 0.5 + MOD_DEPTH;
+    type = "Luminance";
+  } else if (pat === 3 || pat === 5) {
+    // alpha overlay
+    min = meanAlpha - MOD_DEPTH;
+    max = meanAlpha + MOD_DEPTH;
+    type = "Alpha";
+  } else {
+    return null;
+  }
+
+  min = Math.max(0, Math.min(1, min));
+  max = Math.max(0, Math.min(1, max));
+
+  const contrast = (max - min) / (max + min || 1e-9);
+  return { type, min, max, contrast };
+}
+
+let contrastBox = null;
+
+function ensureContrastBox() {
+  if (contrastBox) return;
+
+  contrastBox = document.createElement("div");
+  Object.assign(contrastBox.style, {
+    position: "fixed",
+    bottom: "10px",
+    left: "10px",
+    padding: "8px 10px",
+    background: "rgba(0,0,0,0.7)",
+    color: "white",
+    fontSize: "12px",
+    fontFamily: "monospace",
+    zIndex: "2147483647",
+    pointerEvents: "none",
+    whiteSpace: "pre",
+  });
+
+  document.body.appendChild(contrastBox);
+}
+
+function updateContrastUI() {
+  ensureContrastBox();
+
+  const c = computeContrast();
+  if (!c) {
+    contrastBox.textContent = "";
+    return;
+  }
+
+  contrastBox.textContent =
+    `P${currentPattern} ${c.type}\n` +
+    `min=${c.min.toFixed(3)} max=${c.max.toFixed(3)}\n` +
+    `Michelson=${c.contrast.toFixed(3)}`;
+}
+
+// ===============================
 // Param Safety Warnings
 // ===============================
 function warnIfUnsafe() {
-  // Pattern 2 alpha range = meanAlpha ± MOD_DEPTH
-  const p2Min = meanAlpha - MOD_DEPTH;
-  const p2Max = meanAlpha + MOD_DEPTH;
-  const p2Bad = (p2Min < 0) || (p2Max > 1);
-
-  // Pattern 3/4 luminance range = 0.5 ± MOD_DEPTH
-  const p34Min = 0.5 - MOD_DEPTH;
-  const p34Max = 0.5 + MOD_DEPTH;
-  const p34Bad = (p34Min < 0) || (p34Max > 1);
-
-  const MARGIN = 0.02;
-  const p2Near = (p2Min < MARGIN) || (p2Max > 1 - MARGIN);
-  const p34Near = (p34Min < MARGIN) || (p34Max > 1 - MARGIN);
-
-  const lines = [];
   const pat = currentPattern;
+  const lines = [];
+  const MARGIN = 0.02;
 
-  if (pat === 3 || pat === 0) {
-    if (p2Bad) {
+  // ===============================
+  // ALPHA MODULATION (P3, P5)
+  // ===============================
+  const alphaMin = meanAlpha - MOD_DEPTH;
+  const alphaMax = meanAlpha + MOD_DEPTH;
+
+  const alphaBad = alphaMin < 0 || alphaMax > 1;
+  const alphaNear = alphaMin < MARGIN || alphaMax > 1 - MARGIN;
+
+  if (pat === 3 || pat === 5 || pat === 6 || pat === 0) {
+    if (alphaBad) {
       lines.push(
-        `[WARN] P3 will CLIP: alpha range [${p2Min.toFixed(3)}, ${p2Max.toFixed(3)}] ` +
-        `→ keep MOD_DEPTH <= min(meanAlpha, 1-meanAlpha).`
+        `[WARN][ALPHA] CLIPPING: range [${alphaMin.toFixed(3)}, ${alphaMax.toFixed(3)}] ` +
+          `→ require MOD_DEPTH ≤ min(meanAlpha, 1 - meanAlpha)`
       );
-    } else if (p2Near) {
-      lines.push(`[WARN] P3 near clipping: alpha range [${p2Min.toFixed(3)}, ${p2Max.toFixed(3)}]`);
+    } else if (alphaNear) {
+      lines.push(
+        `[WARN][ALPHA] Near limit: range [${alphaMin.toFixed(3)}, ${alphaMax.toFixed(3)}]`
+      );
     }
   }
 
-  if (pat === 2 || pat === 4 || pat === 0){
-      if (p34Bad) {
+  // ===============================
+  // LUMINANCE MODULATION (P2, P4)
+  // ===============================
+  const lumMin = 0.5 - MOD_DEPTH;
+  const lumMax = 0.5 + MOD_DEPTH;
+
+  const lumBad = lumMin < 0 || lumMax > 1;
+  const lumNear = lumMin < MARGIN || lumMax > 1 - MARGIN;
+
+  if (pat === 2 || pat === 4 || pat === 0) {
+    if (lumBad) {
       lines.push(
-        `[WARN] P${pat === 3 ? "2" : "4"} will CLIP: L range [${p34Min.toFixed(3)}, ${p34Max.toFixed(3)}] ` +
-        `→ keep MOD_DEPTH <= 0.5.`
+        `[WARN][LUMINANCE] CLIPPING: range [${lumMin.toFixed(3)}, ${lumMax.toFixed(3)}] ` +
+          `→ require MOD_DEPTH ≤ 0.5`
       );
-    } else if (p34Near) {
-      lines.push(`[WARN] P2/P4 near clipping: L range [${p34Min.toFixed(3)}, ${p34Max.toFixed(3)}]`);
+    } else if (lumNear) {
+      lines.push(
+        `[WARN][LUMINANCE] Near limit: range [${lumMin.toFixed(3)}, ${lumMax.toFixed(3)}]`
+      );
     }
   }
 
   if (lines.length) {
     for (const l of lines) console.warn(l);
   } else {
-    console.log(`[OK] Params safe | meanAlpha=${meanAlpha.toFixed(3)} MOD_DEPTH=${MOD_DEPTH.toFixed(3)} F=${FLICKER_HZ.toFixed(2)}`);
+    console.log(
+      `[OK] Safe | α=${meanAlpha.toFixed(3)} depth=${MOD_DEPTH.toFixed(3)} f=${FLICKER_HZ.toFixed(2)}Hz`
+    );
   }
 }
 
@@ -200,7 +250,6 @@ function ensureCanvas() {
   if (canvas) return;
 
   canvas = document.createElement("canvas");
-
   Object.assign(canvas.style, {
     position: "fixed",
     inset: "0",
@@ -208,14 +257,11 @@ function ensureCanvas() {
     height: "100vh",
     pointerEvents: "none",
     zIndex: "2147483647",
-
-    // default = normal rendering
     background: "transparent",
     mixBlendMode: "normal",
   });
 
   document.documentElement.appendChild(canvas);
-
   ctx = canvas.getContext("2d", { alpha: true });
 
   resizeCanvas();
@@ -232,10 +278,6 @@ function resizeCanvas() {
   if (canvas.width !== w || canvas.height !== h) {
     canvas.width = w;
     canvas.height = h;
-
-    // Noise/image buffers depend on size
-    noiseImageData = null;
-    generateNoisePattern();
   }
 }
 
@@ -265,9 +307,11 @@ function clamp01(x) {
 function gammaEncodeLinear01(L) {
   return Math.pow(clamp01(L), 1 / DISPLAY_GAMMA);
 }
+
 function squareWave(t, f) {
   return Math.sin(2 * Math.PI * f * t) >= 0 ? 1 : -1;
 }
+
 function integratedSquareM(t0, t1, f, steps = 8) {
   let sum = 0;
   const dt = (t1 - t0) / steps;
@@ -276,11 +320,9 @@ function integratedSquareM(t0, t1, f, steps = 8) {
     const t = t0 + dt * (i + 0.5);
     sum += squareWave(t, f);
   }
-
-  return sum / steps; // range [-1, 1]
+  return sum / steps; // [-1, 1]
 }
 
-// Frame-averaged sine over [t0,t1]
 function integratedSineM(t0, t1, f) {
   const dt = t1 - t0;
   if (dt <= 0 || f <= 0) return 0;
@@ -289,78 +331,61 @@ function integratedSineM(t0, t1, f) {
   const denom = w * dt;
 
   if (denom < 1e-6) return Math.sin(w * t1);
-  return (Math.cos(w * t0) - Math.cos(w * t1)) / denom;
-}
-
-// ===============================
-// Pattern 4 Noise generation
-// ===============================
-function generateNoisePattern() {
-  if (!canvas) return;
-
-  // CHECKER_SIZE is in backing-store pixels here (keeps phase exact on the rendered buffer)
-  const w = Math.ceil(canvas.width / CHECKER_SIZE);
-  const h = Math.ceil(canvas.height / CHECKER_SIZE);
-
-  const total = w * h;
-  const arr = new Int8Array(total);
-
-  // Fill half +1, half -1
-  const half = Math.floor(total / 2);
-  for (let i = 0; i < total; i++) arr[i] = i < half ? 1 : -1;
-
-  // Fisher-Yates shuffle
-  for (let i = total - 1; i > 0; i--) {
-    const j = (Math.random() * (i + 1)) | 0;
-    const tmp = arr[i];
-    arr[i] = arr[j];
-    arr[j] = tmp;
-  }
-
-  noisePattern = arr;
-  noiseW = w;
-  noiseH = h;
+  return (Math.cos(w * t0) - Math.cos(w * t1)) / denom; // [-1, 1]
 }
 
 // ===============================
 // Drawers
 // ===============================
-function clamp255(x) {
-  return x < 0 ? 0 : x > 255 ? 255 : x;
+function bgLinearToSRGB(linear) {
+  return linear <= 0.0031308
+    ? linear * 12.92
+    : 1.055 * Math.pow(linear, 1 / 2.4) - 0.055;
 }
 
-function drawChromaticRG(M) {
-  if (!ctx || !canvas) return;
+function getComplementaryRGB() {
+  try {
+    const el = document.body || document.documentElement;
+    const style = window.getComputedStyle(el);
+    const bg = style.backgroundColor;
+    const rgb = bg.match(/\d+/g);
+    if (!rgb || rgb.length < 3) return { r: 180, g: 20, b: 20 };
 
-  const m = Math.max(-1, Math.min(1, M));
+    const r = parseInt(rgb[0]) / 255;
+    const g = parseInt(rgb[1]) / 255;
+    const b = parseInt(rgb[2]) / 255;
 
-  const base = 128;
-  const A = MOD_DEPTH * 128;
-  const k = 0.2126 / 0.7152;
+    // Perceived luminance (sRGB approximate)
+    const lum = 0.299 * r + 0.587 * g + 0.114 * b;
 
-  const R = clamp255(base + A * m);
-  const G = clamp255(base - k * A * m);
-  const B = base;
+    if (lum < 0.15) {
+      // Very dark / black page → deep saturated red, less alarming than white
+      return { r: 100, g: 20, b: 20 };
+    } else if (lum > 0.85) {
+      // Very light / white page → deep indigo
+      return { r: 40, g: 20, b: 160 };
+    } else {
+      // Mid-tone → true complementary inversion
+      return {
+        r: Math.round((1 - r) * 255),
+        g: Math.round((1 - g) * 255),
+        b: Math.round((1 - b) * 255),
+      };
+    }
+  } catch {
+    return { r: 180, g: 20, b: 20 };
+  }
+}
 
-  ctx.clearRect(0, 0, canvas.width, canvas.height);
+// Cache it on start so we're not querying DOM every frame
+let complementaryColor = { r: 128, g: 128, b: 128 };
 
-  // Transparent chromatic layer
-  // ctx.fillStyle = `rgba(${R|0}, ${G|0}, ${B|0}, 0.15)`;
-  ctx.fillStyle = `rgb(${R|0}, ${G|0}, ${B|0})`;
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
-
-  // ---- Luminance tracking ----
-  const Y =
-    0.2126 * R +
-    0.7152 * G +
-    0.0722 * B;
-
-  const leak = Y - 128;
-
-  if (leak > p7MaxLeak) p7MaxLeak = leak;
-  if (leak < p7MinLeak) p7MinLeak = leak;
-
-  debugPattern7(m, R, G, Y);
+function drawAdaptiveOverlay(isHigh) {
+  if (!overlay) return;
+  const { r, g, b } = complementaryColor;
+  overlay.style.background = `rgb(${r},${g},${b})`;
+  overlay.style.opacity = isHigh ? (meanAlpha + MOD_DEPTH).toString()
+                                 : (meanAlpha - MOD_DEPTH).toString();
 }
 function drawFullScreenBW(isWhite) {
   if (!ctx || !canvas) return;
@@ -387,64 +412,11 @@ function drawFullScreenLuminance(M) {
   ctx.fillRect(0, 0, canvas.width, canvas.height);
 }
 
-function drawNoisePattern(M) {
-  if (!ctx || !canvas) return;
-
-  if (!noisePattern) {
-    generateNoisePattern();
-    if (!noisePattern) return;
-  }
-
-  const m = Math.max(-1, Math.min(1, M));
-  const base = 0.5;
-  const depth = MOD_DEPTH;
-  const width = canvas.width;
-  const height = canvas.height;
-  const size = CHECKER_SIZE;
-
-  if (!noiseImageData || noiseImageData.width !== width || noiseImageData.height !== height) {
-    noiseImageData = ctx.createImageData(width, height);
-  }
-
-  const data = noiseImageData.data;
-  let idx = 0;
-
-  for (let by = 0; by < noiseH; by++) {
-    for (let bx = 0; bx < noiseW; bx++) {
-      const sign = noisePattern[idx++];
-
-      let L = base + sign * depth * m;
-      L = clamp01(L);
-
-      const encoded = gammaEncodeLinear01(L);
-      const v = (encoded * 255) | 0;
-
-      const startX = bx * size;
-      const startY = by * size;
-
-      for (let y = startY; y < startY + size && y < height; y++) {
-        const row = y * width;
-        for (let x = startX; x < startX + size && x < width; x++) {
-          const i = (row + x) * 4;
-          data[i] = v;
-          data[i + 1] = v;
-          data[i + 2] = v;
-          data[i + 3] = 255;
-        }
-      }
-    }
-  }
-
-  ctx.putImageData(noiseImageData, 0, 0);
-}
-
 // ===============================
-// Patterns
+// Patterns 1–5
 // ===============================
 function pattern1(dt) {
-  // Square-wave toggling using accurate accumulator
   acc += dt;
-  p1CycleAccum += dt * FLICKER_HZ;
 
   const halfPeriod = 1 / (2 * FLICKER_HZ);
 
@@ -456,121 +428,99 @@ function pattern1(dt) {
   return { kind: "fullBW", isWhite: squareOn };
 }
 
-// Test Andersen interpolated square works
 function pattern2(t0, t1) {
-  return {
-    kind: "brightness",
-    M: integratedSquareM(t0, t1, FLICKER_HZ)
-  };
+  return { kind: "brightness", M: integratedSquareM(t0, t1, FLICKER_HZ) };
 }
-//Test overlay works
+
 function pattern3(t0, t1) {
-  return {
-    kind: "overlayAlpha",
-    M: integratedSquareM(t0, t1, FLICKER_HZ)
-  };
+  return { kind: "overlayAlpha", M: integratedSquareM(t0, t1, FLICKER_HZ) };
 }
+
 function pattern4(t0, t1) {
-  return {
-    kind: "brightness",
-    M: integratedSineM(t0, t1, FLICKER_HZ)
-  };
+  return { kind: "brightness", M: integratedSineM(t0, t1, FLICKER_HZ) };
 }
+
 function pattern5(t0, t1) {
-  return {
-    kind: "overlayAlpha",
-    M: integratedSineM(t0, t1, FLICKER_HZ)
-  };
+  return { kind: "overlayAlpha", M: integratedSineM(t0, t1, FLICKER_HZ) };
 }
 function pattern6(dt) {
-  const fps = dt > 0 ? 1 / dt : 60;
+  acc += dt;
 
-  // how many cycles this frame
-  //Compute how much phase to move
-  const phaseInc = FLICKER_HZ / fps;
+  const halfPeriod = 1 / (2 * FLICKER_HZ);
 
-  const prevPhase = p6Phase;
-  p6Phase += phaseInc;
-
-  // count how many HALF cycles crossed
-  const prevHalf = Math.floor(prevPhase * 2);
-  const currHalf = Math.floor(p6Phase * 2);
-
-  const flips = currHalf - prevHalf;
-
-  if (flips !== 0) {
-    // flip sign for each crossing
-    if (flips % 2 !== 0) {
-      p6FlipState *= -1;
-    }
+  while (acc >= halfPeriod) {
+    acc -= halfPeriod;
+    squareOn = !squareOn;
   }
 
-  return { kind: "noise", M: p6FlipState, fps, phaseInc, flips };
-}
-function pattern7(t0, t1) {
-  return { kind: "chromatic", M: integratedSineM(t0, t1, FLICKER_HZ) };
-}
-function debugPattern7(m, R, G, Y) {
-  if (!P7_DEBUG) return;
-
-  p7Frames++;
-
-  const now = performance.now();
-
-  if (now - p7LastLogMs >= P7_LOG_MS) {
-    const elapsedSec = (now - p7LastLogMs) / 1000;
-    const fps = p7Frames / elapsedSec;
-
-    console.log(
-      `[P7] fps=${fps.toFixed(1)} ` +
-      `| M=${m.toFixed(3)} ` +
-      `| R=${R.toFixed(1)} G=${G.toFixed(1)} ` +
-      `| Y≈${Y.toFixed(2)} ` +
-      `| leakRange=[${p7MinLeak.toFixed(2)}, ${p7MaxLeak.toFixed(2)}] ` +
-      `| targetHz=${FLICKER_HZ.toFixed(2)}`
-    );
-
-    p7Frames = 0;
-    p7LastLogMs = now;
-    p7MaxLeak = 0;
-    p7MinLeak = 0;
-  }
-}
-function debugPattern6(M, dt, fps, phaseInc, flips) {
-  if (!P6_DEBUG) return;
-
-  p6Frames++;
-
-  p6SignFlips += Math.abs(flips);
-
-  const now = performance.now();
-
-  if (now - p6LastLogMs >= P6_LOG_MS) {
-    const elapsedSec = (now - p6LastLogMs) / 1000;
-
-    const measuredFps = p6Frames / elapsedSec;
-    const flipHz = p6SignFlips / elapsedSec;
-    const approxHz = flipHz / 2;
-
-    console.log(
-      `[P6] fps=${measuredFps.toFixed(1)} ` +
-      `| flips/s=${flipHz.toFixed(2)} ` +
-      `| approxHz=${approxHz.toFixed(2)} ` +
-      `| target=${FLICKER_HZ.toFixed(2)} ` +
-      `| phaseInc=${phaseInc.toFixed(4)} ` +
-      `| flips/frame=${flips} ` +
-      `| M=${M}`
-    );
-
-    p6Frames = 0;
-    p6SignFlips = 0;
-    p6LastLogMs = now;
-  }
+  return { kind: "adaptiveBW", isHigh: squareOn };
 }
 
 // ===============================
 // Debug logging
 // ===============================
+function logDetectedBackground() {
+  try {
+    const el = document.body || document.documentElement;
+    const style = window.getComputedStyle(el);
+
+    let bg = style.backgroundColor;
+
+    // Walk up DOM if transparent
+    let current = el;
+    while (
+      bg === "rgba(0, 0, 0, 0)" ||
+      bg === "transparent"
+    ) {
+      current = current.parentElement;
+      if (!current) break;
+      bg = window.getComputedStyle(current).backgroundColor;
+    }
+
+    if (!bg) {
+      console.log("[BG DETECT] No background found");
+      return;
+    }
+
+    const rgb = bg.match(/\d+/g);
+    if (!rgb || rgb.length < 3) return;
+
+    const r_srgb = parseInt(rgb[0], 10) / 255;
+    const g_srgb = parseInt(rgb[1], 10) / 255;
+    const b_srgb = parseInt(rgb[2], 10) / 255;
+
+    function toLinear(c) {
+      return c <= 0.04045
+        ? c / 12.92
+        : Math.pow((c + 0.055) / 1.055, 2.4);
+    }
+
+    const R = toLinear(r_srgb);
+    const G = toLinear(g_srgb);
+    const B = toLinear(b_srgb);
+
+    const luminance =
+      0.2126 * R +
+      0.7152 * G +
+      0.0722 * B;
+
+    adaptiveBaseLinear = luminance; // 🔴 STORE GLOBALLY
+
+    const type = luminance < 0.5 ? "DARK" : "LIGHT";
+
+    console.log(
+      `[BG DETECT] Raw=${bg} | LinearLum=${luminance.toFixed(4)} | Type=${type}`
+    );
+
+    console.log(
+      `[BG BASE SET] adaptiveBaseLinear=${adaptiveBaseLinear.toFixed(4)}`
+    );
+
+  } catch (e) {
+    console.warn("[BG DETECT] Error:", e);
+  }
+}
+
 function debugPattern1(dt) {
   if (!P1_DEBUG) return;
 
@@ -588,12 +538,12 @@ function debugPattern1(dt) {
   if (now - p1LastLogMs >= P1_LOG_MS) {
     const elapsedSec = (now - p1LastLogMs) / 1000;
     const fps = p1Frames / elapsedSec;
-    const measuredFlipHz = p1Flips / elapsedSec; // half-period flips per second
+    const measuredFlipHz = p1Flips / elapsedSec;
     const measuredSquareHz = measuredFlipHz / 2;
 
     console.log(
       `[P1] fps=${fps.toFixed(1)} | flips/s=${measuredFlipHz.toFixed(2)} ` +
-      `| squareHz≈${measuredSquareHz.toFixed(2)} | jitterCount=${p1JitterCount}`
+        `| squareHz≈${measuredSquareHz.toFixed(2)} | jitterCount=${p1JitterCount}`
     );
 
     p1Frames = 0;
@@ -602,14 +552,13 @@ function debugPattern1(dt) {
     p1LastLogMs = now;
   }
 }
+
 function debugPattern4(M, dt) {
   if (!P4_DEBUG) return;
 
   p4Frames++;
-  p4CycleAccum += dt * FLICKER_HZ;
 
   const now = performance.now();
-
   if (now - p4LastLogMs >= P4_LOG_MS) {
     const elapsedSec = (now - p4LastLogMs) / 1000;
     const fps = p4Frames / elapsedSec;
@@ -619,9 +568,9 @@ function debugPattern4(M, dt) {
 
     console.log(
       `[P4] fps=${fps.toFixed(1)} ` +
-      `| M=${M.toFixed(3)} ` +
-      `| Lrange=[${Lmin.toFixed(3)}, ${Lmax.toFixed(3)}] ` +
-      `| targetHz=${FLICKER_HZ.toFixed(2)}`
+        `| M=${M.toFixed(3)} ` +
+        `| Lrange=[${Lmin.toFixed(3)}, ${Lmax.toFixed(3)}] ` +
+        `| targetHz=${FLICKER_HZ.toFixed(2)}`
     );
 
     p4Frames = 0;
@@ -650,67 +599,33 @@ function loop(nowMs) {
 
   let cmd;
   switch (currentPattern) {
-  case 1:
-    cmd = pattern1(dt);
-    break;
-  case 2:
-    cmd = pattern2(t0, t1);
-    break;
-  case 3:
-    cmd = pattern3(t0, t1);
-    break;
-  case 4:
-    cmd = pattern4(t0, t1);
-    break;
-  case 5:
-    cmd = pattern5(t0, t1);
-    break;
-  case 6:
-    cmd = pattern6(dt);
-    break;
-  case 7:
-    cmd = pattern7(t0, t1);
-    break;
-  default:
-    cmd = pattern1(dt);
-    break;
-}
+    case 1: cmd = pattern1(dt); break;
+    case 2: cmd = pattern2(t0, t1); break;
+    case 3: cmd = pattern3(t0, t1); break;
+    case 4: cmd = pattern4(t0, t1); break;
+    case 5: cmd = pattern5(t0, t1); break;
+    case 6: cmd = pattern6(dt); break;
+    default: cmd = pattern1(dt); break;
+  }
 
   // Execute draw command
   if (cmd.kind === "fullBW") {
     drawFullScreenBW(cmd.isWhite);
     debugPattern1(dt);
-  } else if (cmd.kind === "overlayAlpha") {
+  } else if (cmd.kind === "adaptiveBW") {
+drawAdaptiveOverlay(cmd.isHigh);
+}
+  else if (cmd.kind === "overlayAlpha") {
     drawOverlayAlpha(cmd.M);
   } else if (cmd.kind === "brightness") {
     drawFullScreenLuminance(cmd.M);
-    if (currentPattern === 4) {
-      debugPattern4(cmd.M, dt);
+    if (currentPattern === 4) debugPattern4(cmd.M, dt);
   }
-  } else if (cmd.kind === "noise") {
-    drawNoisePattern(cmd.M);
-  //   if (currentPattern === 4) {
-  //     debugPattern4(cmd.M, dt);
-  //   if (metLogger) {
-  //     const fpsEstimate = dt > 0 ? 1 / dt : 60;
-  //     metLogger({
-  //       patternId: currentPattern,
-  //       fpsEstimate,
-  //       modDepth: MOD_DEPTH,
-  //       M: cmd.M
-  //     });
-  //   }
-  // }
-  if (currentPattern === 6) {
-    debugPattern6(cmd.M, dt, cmd.fps, cmd.phaseInc, cmd.flips);
-  }
-  }
-  else if (cmd.kind === "chromatic") {
-      drawChromaticRG(cmd.M);
-    }
 
+  updateContrastUI();
   rafId = requestAnimationFrame(loop);
 }
+
 // ===============================
 // Start / Stop
 // ===============================
@@ -724,56 +639,40 @@ function resetRuntimeState() {
   p1Frames = 0;
   p1Flips = 0;
   p1PrevSquare = null;
-  p1CycleAccum = 0;
   p1PrevFrameTime = null;
   p1JitterCount = 0;
   p1LastLogMs = performance.now();
 
   // P4 debug
   p4Frames = 0;
-  p4SignFlips = 0;
-  p4LastSign = 0;
-  p4CycleAccum = 0;
   p4LastLogMs = performance.now();
-
-    // P6 debug
-  p6Phase = 0;
-  p6Frames = 0;
-  p6SignFlips = 0;
-  p6LastSign = 0;
-  p6LastLogMs = performance.now();
-  // P7 debug
-  p7Frames = 0;
-  p7LastLogMs = performance.now();
-  p7MaxLeak = 0;
-  p7MinLeak = 0;
 }
 
 function start(pattern = currentPattern) {
   stop();
-
+  logDetectedBackground(); 
+  complementaryColor = getComplementaryRGB();
+  if (Number(pattern) === 6) {
+    console.log(`[P6] Complementary color: rgb(${complementaryColor.r},${complementaryColor.g},${complementaryColor.b})`);
+  }
   currentPattern = Number(pattern) || 1;
   warnIfUnsafe();
 
-  // Pattern 2 uses overlay (keep canvas cleared if exists)
-  if (currentPattern === 3) {
+  const isOverlayPattern =
+  currentPattern === 3 ||
+  currentPattern === 5 ||
+  currentPattern === 6;
+
+  if (isOverlayPattern) {
     ensureOverlay();
     if (overlay) overlay.style.opacity = "0";
-    if (canvas && ctx) ctx.clearRect(0, 0, canvas.width, canvas.height);
 
+    // Clear canvas if exists
+    if (canvas && ctx) ctx.clearRect(0, 0, canvas.width, canvas.height);
   } else {
     ensureCanvas();
     if (overlay) overlay.style.opacity = "0";
-
-    //Apply blend mode ONLY for Pattern 7
-    if (currentPattern === 7) {
-      // canvas.style.mixBlendMode = "color";
-      canvas.style.mixBlendMode = "normal";
-    } else {
-      canvas.style.mixBlendMode = "normal";
-    }
-
-    generateNoisePattern(); // harmless for non-P4
+    if (canvas) canvas.style.mixBlendMode = "normal";
   }
 
   resetRuntimeState();
@@ -790,18 +689,10 @@ function stop() {
     rafId = null;
   }
 
-  if (ctx && canvas) {
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-  }
+  if (ctx && canvas) ctx.clearRect(0, 0, canvas.width, canvas.height);
+  if (overlay) overlay.style.opacity = "0";
+  if (canvas) canvas.style.mixBlendMode = "normal";
 
-  if (overlay) {
-    overlay.style.opacity = "0";
-  }
-  if (canvas) {
-    canvas.style.mixBlendMode = "normal";
-  }
-
-  // in case older experiments used CSS filter
   document.documentElement.style.filter = "";
 }
 
@@ -826,78 +717,70 @@ chrome.runtime.onMessage.addListener((msg) => {
   }
 
   if (msg.type === "SET_PATTERN") {
-  currentPattern = Number(msg.pattern) || 1;
+    currentPattern = Number(msg.pattern) || 1;
 
-  chrome.storage.local.get(["patternParams"], (s) => {
-    const all = s.patternParams || {};
-    const p = all[currentPattern] || DEFAULT_PARAMS[currentPattern];
+    chrome.storage.local.get(["patternParams"], (s) => {
+      const all = s.patternParams || {};
+      const p = all[currentPattern] || DEFAULT_PARAMS[currentPattern];
 
-    // LOAD that pattern's params
-    meanAlpha = p.meanAlpha;
-    MOD_DEPTH = p.modDepth;
-    FLICKER_HZ = p.freq;
-    CHECKER_SIZE = p.checkerSize;
+      meanAlpha = p.meanAlpha;
+      MOD_DEPTH = p.modDepth;
+      FLICKER_HZ = p.freq;
+      CHECKER_SIZE = p.checkerSize;
 
-    console.log("[SWITCH] Pattern", currentPattern, p);
+      console.log("[SWITCH] Pattern", currentPattern, p);
+
+      warnIfUnsafe();
+
+      chrome.storage.local.set({ currentPattern });
+      resetRuntimeState();
+    });
+
+    return;
+  }
+
+  if (msg.type === "SET_PARAMS") {
+    if (typeof msg.meanAlpha === "number") meanAlpha = msg.meanAlpha;
+    if (typeof msg.modDepth === "number") MOD_DEPTH = msg.modDepth;
+    if (typeof msg.freq === "number") FLICKER_HZ = msg.freq;
+    if (typeof msg.checkerSize === "number") CHECKER_SIZE = msg.checkerSize;
 
     warnIfUnsafe();
 
-    chrome.storage.local.set({ currentPattern });
-    resetRuntimeState();
-  });
+    chrome.storage.local.get(["patternParams"], (s) => {
+      const all = s.patternParams || {};
 
-  return;
-}
+      all[currentPattern] = {
+        meanAlpha,
+        modDepth: MOD_DEPTH,
+        freq: FLICKER_HZ,
+        checkerSize: CHECKER_SIZE,
+      };
 
-  if (msg.type === "SET_PARAMS") {
-  if (typeof msg.meanAlpha === "number") meanAlpha = msg.meanAlpha;
-  if (typeof msg.modDepth === "number") MOD_DEPTH = msg.modDepth;
-  if (typeof msg.freq === "number") FLICKER_HZ = msg.freq;
-  if (typeof msg.checkerSize === "number") CHECKER_SIZE = msg.checkerSize;
+      chrome.storage.local.set({ patternParams: all });
+      console.log("[SAVE] Pattern", currentPattern, all[currentPattern]);
+    });
 
-  // Update noise if needed
-  if (canvas) {
-    noiseImageData = null;
-    generateNoisePattern();
+    return;
   }
 
-  warnIfUnsafe();
+  if (msg.type === "RESET_DEFAULT") {
+    const def = DEFAULT_PARAMS[currentPattern];
 
-  // SAVE PER PATTERN
-  chrome.storage.local.get(["patternParams"], (s) => {
-    const all = s.patternParams || {};
+    meanAlpha = def.meanAlpha;
+    MOD_DEPTH = def.modDepth;
+    FLICKER_HZ = def.freq;
+    CHECKER_SIZE = def.checkerSize;
 
-    all[currentPattern] = {
-      meanAlpha,
-      modDepth: MOD_DEPTH,
-      freq: FLICKER_HZ,
-      checkerSize: CHECKER_SIZE,
-    };
+    warnIfUnsafe();
 
-    chrome.storage.local.set({ patternParams: all });
+    chrome.storage.local.get(["patternParams"], (s) => {
+      const all = s.patternParams || {};
+      all[currentPattern] = { ...def };
+      chrome.storage.local.set({ patternParams: all });
+    });
 
-    console.log("[SAVE] Pattern", currentPattern, all[currentPattern]);
-  });
-
-  return;
-}
-if (msg.type === "RESET_DEFAULT") {
-  const def = DEFAULT_PARAMS[currentPattern];
-
-  meanAlpha = def.meanAlpha;
-  MOD_DEPTH = def.modDepth;
-  FLICKER_HZ = def.freq;
-  CHECKER_SIZE = def.checkerSize;
-
-  warnIfUnsafe();
-
-  chrome.storage.local.get(["patternParams"], (s) => {
-    const all = s.patternParams || {};
-    all[currentPattern] = { ...def };
-
-    chrome.storage.local.set({ patternParams: all });
-  });
-
-  console.log("[RESET] Pattern", currentPattern, def);
-}
+    console.log("[RESET] Pattern", currentPattern, def);
+    return;
+  }
 });
