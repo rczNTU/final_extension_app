@@ -7,7 +7,6 @@
 // 4 = Full-screen luminance modulation (integrated sine)
 // 5 = Neutral-grey overlay opacity modulation (integrated sine)
 // ===============================
-import { initFireflies, drawFireflies } from "./patterns/fireflies.js";
 // ---- Params ----
 let FLICKER_HZ = 40;
 let meanAlpha = 0.3;
@@ -284,9 +283,9 @@ function resizeCanvas() {
     canvas.width = w;
     canvas.height = h;
 
-    if (currentPattern === 11) {
-      initFireflies(w / dpr, h / dpr, 28);
-    }
+    if (currentPattern === 11 && running) {
+  initFireflies(w / dpr, h / dpr, 28);
+}
   }
 }
 
@@ -599,9 +598,17 @@ function pattern9(dt) {
 function pattern10(t0, t1) {
   return { kind: "borderChecker", M: integratedSineM(t0, t1, FLICKER_HZ) };
 }
-function pattern11() {
-  return { kind: "fireflies" };
+function pattern11(dt, t1) {
+  // Exact P1 accumulator — jitter-compensated, phase-stable
+  acc += dt;
+  const halfPeriod = 1 / (2 * FLICKER_HZ);
+  while (acc >= halfPeriod) {
+    acc -= halfPeriod;
+    squareOn = !squareOn;
+  }
+  return { kind: "fireflies", t1 };
 }
+
 // ===============================
 // Debug logging
 // ===============================
@@ -723,7 +730,92 @@ function debugPattern4(M, dt) {
     p4LastLogMs = now;
   }
 }
+//====
+// ===============================
+// Pattern 11 – Fireflies
+// ===============================
+let fireflies = [];
 
+function initFireflies(w, h, count = 28) {
+  fireflies = [];
+  const band = Math.min(w, h) * 0.10;
+
+  for (let i = 0; i < count; i++) {
+    let x, y;
+    const edge = Math.floor(Math.random() * 4);
+    if (edge === 0) { x = Math.random() * w; y = Math.random() * band; }
+    else if (edge === 1) { x = Math.random() * w; y = h - Math.random() * band; }
+    else if (edge === 2) { x = Math.random() * band; y = Math.random() * h; }
+    else               { x = w - Math.random() * band; y = Math.random() * h; }
+
+    fireflies.push({
+      x, y,
+      vx: (Math.random() - 0.5) * 0.4,
+      vy: (Math.random() - 0.5) * 0.4,
+      phase: Math.random() * Math.PI * 2,      // envelope phase only
+      glowSpeed: 0.3 + Math.random() * 0.7,
+      // radius: 2.5 + Math.random() * 2.5,
+      radius: 4 + Math.random() * 4,
+      hue: 48 + Math.random() * 28,
+    });
+  }
+}
+
+function drawFireflies(t1) {
+  if (!ctx || !canvas || fireflies.length === 0) return;
+
+  const dw = canvas.width / dpr;
+  const dh = canvas.height / dpr;
+  const band = Math.min(dw, dh) * 0.10;
+
+  for (const f of fireflies) {
+    // Organic drift
+    f.vx += (Math.random() - 0.5) * 0.05;
+    f.vy += (Math.random() - 0.5) * 0.05;
+    f.vx = Math.max(-0.7, Math.min(0.7, f.vx));
+    f.vy = Math.max(-0.7, Math.min(0.7, f.vy));
+    f.x += f.vx;
+    f.y += f.vy;
+
+    // Border confinement
+    const tooFarIn =
+      f.x > band && f.x < dw - band &&
+      f.y > band && f.y < dh - band;
+    if (tooFarIn) {
+      const dl = f.x, dr = dw - f.x, dt_ = f.y, db = dh - f.y;
+      const mn = Math.min(dl, dr, dt_, db);
+      if (mn === dl) f.vx -= 0.12;
+      else if (mn === dr) f.vx += 0.12;
+      else if (mn === dt_) f.vy -= 0.12;
+      else f.vy += 0.12;
+    }
+    f.x = Math.max(1, Math.min(dw - 1, f.x));
+    f.y = Math.max(1, Math.min(dh - 1, f.y));
+
+    // Slow envelope — size and shape only, never brightness
+    const envelope = 0.5 + 0.5 * Math.sin(2 * Math.PI * f.glowSpeed * t1 + f.phase);
+    const r = (f.radius + envelope * 3) * dpr;
+    const cx = f.x * dpr;
+    const cy = f.y * dpr;
+
+    // P1 temporal logic: all fireflies flip together, same frame, same phase
+    const alpha = squareOn ? 0.95 : 0.04;
+
+    const grad = ctx.createRadialGradient(cx, cy, 0, cx, cy, r * 4);
+    grad.addColorStop(0,    `hsla(${f.hue}, 90%, 88%, ${alpha.toFixed(3)})`);
+    grad.addColorStop(0.25, `hsla(${f.hue}, 85%, 70%, ${(alpha * 0.6).toFixed(3)})`);
+    grad.addColorStop(1,    `hsla(${f.hue}, 70%, 50%, 0)`);
+    ctx.beginPath();
+    ctx.arc(cx, cy, r * 4, 0, Math.PI * 2);
+    ctx.fillStyle = grad;
+    ctx.fill();
+
+    ctx.beginPath();
+    ctx.arc(cx, cy, r * 0.6, 0, Math.PI * 2);
+    ctx.fillStyle = `hsla(${f.hue + 20}, 100%, 97%, ${alpha.toFixed(3)})`;
+    ctx.fill();
+  }
+}
 // ===============================
 // Main Loop
 // ===============================
@@ -759,7 +851,7 @@ function loop(nowMs) {
     case 8: cmd = pattern8(dt); break;
     case 9: cmd = pattern9(dt); break;
     case 10: cmd = pattern10(t0, t1); break;
-    case 11: cmd = pattern11(); break;
+    case 11: cmd = pattern11(dt, t1); break;
     default: cmd = pattern1(dt); break;
   }
 
@@ -786,7 +878,7 @@ drawAdaptiveOverlay(cmd.isHigh);
     drawBorderChecker(cmd.M);
   }
   else if (cmd.kind === "fireflies") {
-  drawFireflies(ctx, canvas, dpr, t1, clamp01, FLICKER_HZ, MOD_DEPTH);
+  drawFireflies(cmd.t1);  // no dt — accumulator already advanced
 }
 
   updateContrastUI();
@@ -826,11 +918,7 @@ function start(pattern = currentPattern) {
   warnIfUnsafe();
   if (currentPattern === 11) {
   ensureCanvas();
-
-  const width = canvas.width / dpr;
-  const height = canvas.height / dpr;
-
-  initFireflies(width, height, 28);
+  initFireflies(window.innerWidth, window.innerHeight, 50);
 }
 
   const isOverlayPattern =
