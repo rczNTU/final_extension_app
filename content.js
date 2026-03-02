@@ -7,7 +7,7 @@
 // 4 = Full-screen luminance modulation (integrated sine)
 // 5 = Neutral-grey overlay opacity modulation (integrated sine)
 // ===============================
-
+import { initFireflies, drawFireflies } from "./patterns/fireflies.js";
 // ---- Params ----
 let FLICKER_HZ = 40;
 let meanAlpha = 0.3;
@@ -62,6 +62,11 @@ const DEFAULT_PARAMS = {
   4: { meanAlpha: 0.5, modDepth: 0.4, freq: 40, checkerSize: 12 },
   5: { meanAlpha: 0.3, modDepth: 0.3, freq: 40, checkerSize: 12 },
   6: { meanAlpha: 0.5, modDepth: 0.1, freq: 40, checkerSize: 12 },
+  7: { meanAlpha: 0.5, modDepth: 0.4, freq: 40, checkerSize: 12 },
+  8: { meanAlpha: 0.5, modDepth: 1.0, freq: 40, checkerSize: 12 },
+  9: { meanAlpha: 0.3, modDepth: 0.2, freq: 40, checkerSize: 12 },
+  10: { meanAlpha: 0.5, modDepth: 0.4, freq: 40, checkerSize: 12 },
+  11: { meanAlpha: 0.3, modDepth: 0.2, freq: 40, checkerSize: 12 },
 };
 
 // ---- Init ----
@@ -278,6 +283,10 @@ function resizeCanvas() {
   if (canvas.width !== w || canvas.height !== h) {
     canvas.width = w;
     canvas.height = h;
+
+    if (currentPattern === 11) {
+      initFireflies(w / dpr, h / dpr, 28);
+    }
   }
 }
 
@@ -337,6 +346,110 @@ function integratedSineM(t0, t1, f) {
 // ===============================
 // Drawers
 // ===============================
+function drawBorderChecker(M) {
+  if (!ctx || !canvas) return;
+
+  const size = Math.max(2, CHECKER_SIZE * dpr);
+
+  const m = Math.max(-1, Math.min(1, M));
+  const L = clamp01(0.5 + MOD_DEPTH * m);
+  const encoded = gammaEncodeLinear01(L);
+  const v = Math.round(encoded * 255);
+
+  const w = canvas.width;
+  const h = canvas.height;
+
+  const border = Math.min(w, h) * 0.02;
+
+  ctx.clearRect(0, 0, w, h);
+
+  for (let y = 0; y < h; y += size) {
+    for (let x = 0; x < w; x += size) {
+
+      // FIXED CONDITION
+      const inBorder =
+        x < border ||
+        x + size > w - border ||
+        y < border ||
+        y + size > h - border;
+
+      if (!inBorder) continue;
+
+      const isWhite = ((x / size + y / size) % 2) === 0;
+      const color = isWhite ? v : 255 - v;
+
+      ctx.fillStyle = `rgb(${color}, ${color}, ${color})`;
+      ctx.fillRect(x, y, size, size);
+    }
+  }
+}
+function drawCheckerboardAlpha(isHigh) {
+  if (!ctx || !canvas) return;
+
+  const size = Math.max(2, CHECKER_SIZE * dpr);
+
+  // alpha modulation
+  const alpha = clamp01(
+    meanAlpha + (isHigh ? MOD_DEPTH : -MOD_DEPTH)
+  );
+
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  ctx.globalAlpha = alpha;
+
+  for (let y = 0; y < canvas.height; y += size) {
+    for (let x = 0; x < canvas.width; x += size) {
+      let isWhite = ((x / size + y / size) % 2) === 0;
+
+      // phase reversal
+      if (isHigh) isWhite = !isWhite;
+
+      ctx.fillStyle = isWhite ? "white" : "black";
+      ctx.fillRect(x, y, size, size);
+    }
+  }
+
+  ctx.globalAlpha = 1.0;
+}
+function drawCheckerboard(M) {
+  if (!ctx || !canvas) return;
+
+  const size = Math.max(2, CHECKER_SIZE * dpr);
+
+  const m = Math.max(-1, Math.min(1, M));
+
+  // luminance modulation (like pattern4)
+  const L = clamp01(0.5 + MOD_DEPTH * m);
+  const encoded = gammaEncodeLinear01(L);
+  const v = Math.round(encoded * 255);
+
+  for (let y = 0; y < canvas.height; y += size) {
+    for (let x = 0; x < canvas.width; x += size) {
+      const isWhite = ((x / size + y / size) % 2) === 0;
+
+      const color = isWhite ? v : 255 - v;
+      ctx.fillStyle = `rgb(${color}, ${color}, ${color})`;
+      ctx.fillRect(x, y, size, size);
+    }
+  }
+}
+function drawCheckerboardPhase(isHigh) {
+  if (!ctx || !canvas) return;
+
+  const size = Math.max(2, CHECKER_SIZE * dpr);
+
+  for (let y = 0; y < canvas.height; y += size) {
+    for (let x = 0; x < canvas.width; x += size) {
+      let isWhite = ((x / size + y / size) % 2) === 0;
+
+      // flip polarity
+      if (isHigh) isWhite = !isWhite;
+
+      ctx.fillStyle = isWhite ? "white" : "black";
+      ctx.fillRect(x, y, size, size);
+    }
+  }
+}
 function bgLinearToSRGB(linear) {
   return linear <= 0.0031308
     ? linear * 12.92
@@ -455,7 +568,40 @@ function pattern6(dt) {
 
   return { kind: "adaptiveBW", isHigh: squareOn };
 }
+function pattern7(t0, t1) {
+  return { kind: "checker", M: integratedSineM(t0, t1, FLICKER_HZ) };
+}
 
+function pattern8(dt) {
+  acc += dt;
+
+  const halfPeriod = 1 / (2 * FLICKER_HZ);
+
+  while (acc >= halfPeriod) {
+    acc -= halfPeriod;
+    squareOn = !squareOn;
+  }
+
+  return { kind: "checkerPhase", isHigh: squareOn };
+}
+function pattern9(dt) {
+  acc += dt;
+
+  const halfPeriod = 1 / (2 * FLICKER_HZ);
+
+  while (acc >= halfPeriod) {
+    acc -= halfPeriod;
+    squareOn = !squareOn;
+  }
+
+  return { kind: "checkerAlpha", isHigh: squareOn };
+}
+function pattern10(t0, t1) {
+  return { kind: "borderChecker", M: integratedSineM(t0, t1, FLICKER_HZ) };
+}
+function pattern11() {
+  return { kind: "fireflies" };
+}
 // ===============================
 // Debug logging
 // ===============================
@@ -583,6 +729,10 @@ function debugPattern4(M, dt) {
 // ===============================
 function loop(nowMs) {
   if (!running) return;
+  if (ctx && canvas) {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+  }
+
 
   const nowSec = nowMs / 1000;
 
@@ -605,6 +755,11 @@ function loop(nowMs) {
     case 4: cmd = pattern4(t0, t1); break;
     case 5: cmd = pattern5(t0, t1); break;
     case 6: cmd = pattern6(dt); break;
+    case 7: cmd = pattern7(t0, t1); break;
+    case 8: cmd = pattern8(dt); break;
+    case 9: cmd = pattern9(dt); break;
+    case 10: cmd = pattern10(t0, t1); break;
+    case 11: cmd = pattern11(); break;
     default: cmd = pattern1(dt); break;
   }
 
@@ -620,7 +775,19 @@ drawAdaptiveOverlay(cmd.isHigh);
   } else if (cmd.kind === "brightness") {
     drawFullScreenLuminance(cmd.M);
     if (currentPattern === 4) debugPattern4(cmd.M, dt);
+  } else if (cmd.kind === "checker") {
+    drawCheckerboard(cmd.M);
+  } else if (cmd.kind === "checkerPhase") {
+    drawCheckerboardPhase(cmd.isHigh);
+  } else if (cmd.kind === "checkerAlpha") {
+    drawCheckerboardAlpha(cmd.isHigh);
   }
+  else if (cmd.kind === "borderChecker") {
+    drawBorderChecker(cmd.M);
+  }
+  else if (cmd.kind === "fireflies") {
+  drawFireflies(ctx, canvas, dpr, t1, clamp01, FLICKER_HZ, MOD_DEPTH);
+}
 
   updateContrastUI();
   rafId = requestAnimationFrame(loop);
@@ -657,6 +824,14 @@ function start(pattern = currentPattern) {
   }
   currentPattern = Number(pattern) || 1;
   warnIfUnsafe();
+  if (currentPattern === 11) {
+  ensureCanvas();
+
+  const width = canvas.width / dpr;
+  const height = canvas.height / dpr;
+
+  initFireflies(width, height, 28);
+}
 
   const isOverlayPattern =
   currentPattern === 3 ||
