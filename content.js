@@ -225,7 +225,7 @@ function warnIfUnsafe() {
   const lumBad = lumMin < 0 || lumMax > 1;
   const lumNear = lumMin < MARGIN || lumMax > 1 - MARGIN;
 
-  if (pat === 2 || pat === 4 || pat === 0) {
+  if (pat === 2 || pat === 4 || pat === 7 || pat === 10 || pat === 0) {
     if (lumBad) {
       lines.push(
         `[WARN][LUMINANCE] CLIPPING: range [${lumMin.toFixed(3)}, ${lumMax.toFixed(3)}] ` +
@@ -351,7 +351,8 @@ function drawBorderChecker(M) {
   const size = Math.max(2, CHECKER_SIZE * dpr);
 
   const m = Math.max(-1, Math.min(1, M));
-  const L = clamp01(0.5 + MOD_DEPTH * m);
+  // const L = clamp01(0.5 + MOD_DEPTH * m);
+  const L = clamp01(meanAlpha + MOD_DEPTH * m);
   const encoded = gammaEncodeLinear01(L);
   const v = Math.round(encoded * 255);
 
@@ -754,8 +755,8 @@ function initFireflies(w, h, count = 28) {
       vy: (Math.random() - 0.5) * 0.4,
       phase: Math.random() * Math.PI * 2,      // envelope phase only
       glowSpeed: 0.3 + Math.random() * 0.7,
-      // radius: 2.5 + Math.random() * 2.5,
-      radius: 4 + Math.random() * 4,
+      radius: 1.2 + Math.random() * 1.8,
+      // radius: 4 + Math.random() * 4,
       hue: 48 + Math.random() * 28,
     });
   }
@@ -918,7 +919,7 @@ function start(pattern = currentPattern) {
   warnIfUnsafe();
   if (currentPattern === 11) {
   ensureCanvas();
-  initFireflies(window.innerWidth, window.innerHeight, 50);
+  initFireflies(window.innerWidth, window.innerHeight, 100);
 }
 
   const isOverlayPattern =
