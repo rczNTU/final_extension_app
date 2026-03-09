@@ -70,7 +70,23 @@ const DEFAULT_PARAMS = {
 
 // ---- Init ----
 init();
+let stimLayer = null;
 
+function ensureStimLayer() {
+
+  if (stimLayer) return;
+
+  stimLayer = document.createElement("div");
+
+  Object.assign(stimLayer.style,{
+    position:"fixed",
+    inset:"0",
+    pointerEvents:"none",
+    zIndex:"10"   // BELOW fixation UI
+  });
+
+  document.body.appendChild(stimLayer);
+}
 function init() {
   hydrate(true);
   window.addEventListener("resize", resizeCanvas);
@@ -254,18 +270,20 @@ function ensureCanvas() {
   if (canvas) return;
 
   canvas = document.createElement("canvas");
-  Object.assign(canvas.style, {
-    position: "fixed",
-    inset: "0",
-    width: "100vw",
-    height: "100vh",
-    pointerEvents: "none",
-    zIndex: "2147483647",
-    background: "transparent",
-    mixBlendMode: "normal",
-  });
+  Object.assign(canvas.style,{
+  position:"absolute",
+  inset:"0",
+  width:"100%",
+  height:"100%",
+  pointerEvents:"none",
+  zIndex:"1",
+  background:"transparent",
+  mixBlendMode:"normal",
+});
 
-  document.documentElement.appendChild(canvas);
+  ensureStimLayer();
+  stimLayer.appendChild(canvas);
+  canvas.style.zIndex = "1"
   ctx = canvas.getContext("2d", { alpha: true });
 
   resizeCanvas();
@@ -298,11 +316,12 @@ function ensureOverlay() {
     inset: "0",
     background: "rgb(128,128,128)", // neutral grey
     pointerEvents: "none",
-    zIndex: "2147483646",
+    zIndex: "2",
     opacity: "0",
   });
 
-  document.documentElement.appendChild(overlay);
+  ensureStimLayer();
+  stimLayer.appendChild(overlay);
 }
 
 // ===============================
@@ -800,6 +819,7 @@ function drawFireflies(t1) {
     const cy = f.y * dpr;
 
     // P1 temporal logic: all fireflies flip together, same frame, same phase
+    //The values were chosen to produce large modulation depth (~0.9) while avoiding full disappearance of the stimulus.
     const alpha = squareOn ? 0.95 : 0.04;
 
     const grad = ctx.createRadialGradient(cx, cy, 0, cx, cy, r * 4);
@@ -880,6 +900,7 @@ drawAdaptiveOverlay(cmd.isHigh);
   }
   else if (cmd.kind === "fireflies") {
   drawFireflies(cmd.t1);  // no dt — accumulator already advanced
+  
 }
 
   updateContrastUI();
@@ -963,6 +984,82 @@ function stop() {
 // ===============================
 // Messaging
 // ===============================
+// ===============================
+// Keyboard Shortcuts
+// ===============================
+// ===============================
+// Keyboard Shortcuts (Cross-Platform)
+// ===============================
+document.addEventListener("keydown", (e) => {
+
+  // Avoid triggering while typing
+  const tag = document.activeElement?.tagName;
+  if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+
+  const ctrl = e.ctrlKey;
+  const shift = e.shiftKey;
+
+  if (!ctrl || !shift) return;
+
+  // ---------------------------
+  // START
+  // Ctrl + Shift + S
+  // ---------------------------
+  if (e.key.toLowerCase() === "s") {
+    console.log("[HOTKEY] START pattern", currentPattern);
+    start(currentPattern);
+    return;
+  }
+
+  // ---------------------------
+  // STOP
+  // Ctrl + Shift + X
+  // ---------------------------
+  if (e.key.toLowerCase() === "x") {
+    console.log("[HOTKEY] STOP");
+    stop();
+    return;
+  }
+
+  // ---------------------------
+  // Pattern switching
+  // Ctrl + Shift + 1..9
+  // ---------------------------
+  const num = parseInt(e.key);
+
+  if (!isNaN(num) && num >= 1 && num <= 9) {
+    console.log("[HOTKEY] Pattern", num);
+
+    currentPattern = num;
+    resetRuntimeState();
+    start(num);
+    return;
+  }
+
+  // ---------------------------
+  // Pattern 10
+  // Ctrl + Shift + 0
+  // ---------------------------
+  if (e.key === "0") {
+    console.log("[HOTKEY] Pattern 10");
+    currentPattern = 10;
+    resetRuntimeState();
+    start(10);
+    return;
+  }
+
+  // ---------------------------
+  // Pattern 11
+  // Ctrl + Shift + -
+  // ---------------------------
+  if (e.key === "L") {
+    console.log("[HOTKEY] Pattern 11");
+    currentPattern = 11;
+    resetRuntimeState();
+    start(11);
+  }
+
+});
 chrome.runtime.onMessage.addListener((msg) => {
   if (!msg || typeof msg.type !== "string") return;
 
@@ -1048,3 +1145,30 @@ chrome.runtime.onMessage.addListener((msg) => {
     return;
   }
 });
+// ===============================
+// Listen for page messages
+// ===============================
+window.addEventListener("message", (event) => {
+
+  if (event.source !== window) return
+
+  const msg = event.data
+  if (!msg || !msg.type) return
+
+  console.log("[PAGE MESSAGE]", msg)
+
+  if (msg.type === "START_PATTERN") {
+    start(currentPattern)
+  }
+
+  if (msg.type === "STOP_PATTERN") {
+    stop()
+  }
+
+  if (msg.type === "SET_PATTERN") {
+    currentPattern = Number(msg.pattern) || 1
+    resetRuntimeState()
+    console.log("[PAGE] Pattern set:", currentPattern)
+  }
+
+})

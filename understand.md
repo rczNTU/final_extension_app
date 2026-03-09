@@ -34,3 +34,11 @@ function gammaEncodeLinear01(L) {
 | Pixel value | Actual brightness |
 | ----------- | ----------------- |
 | 128         | ~0.22 (not 0.5!)  |
+
+
+All spatial elements were modulated synchronously using a shared temporal accumulator to ensure coherent 40 Hz stimulation across the visual field.
+All spatial elements were modulated synchronously using a shared temporal accumulator to ensure coherent 40 Hz stimulation across the visual field.
+Flicker timing was implemented using a time-integrated accumulator rather than frame counting, ensuring stable temporal frequency independent of display refresh variability.
+Firefly elements exhibited slow stochastic drift to reduce visual adaptation while preserving the global temporal modulation.
+Slow sinusoidal envelope modulation was applied only to spatial extent (radius), ensuring that luminance modulation remained strictly controlled by the 40 Hz square wave.
+sinusodial on pattern 11 wasnt used as i went for max constrast square waves
