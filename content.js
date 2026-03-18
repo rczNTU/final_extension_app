@@ -872,9 +872,15 @@ function drawFireflies(t1, M = null)  {
       // Pattern 11 (square)
       alpha = squareOn ? 0.95 : 0.04;
     } else {
-      // Pattern 12 (sine)
-      alpha = clamp01(0.495 + 0.455 * M);//hard code for now
-    }
+        // Pattern 12 (sine) — matched contrast to P11
+
+        const MIN_A = 0.04;
+        const MAX_A = 0.95;
+        const GAIN = 1.25; // compensates integration loss
+
+        const norm = ((M * GAIN) + 1) / 2;   // [-1,1] → [0,1] with boost
+        alpha = MIN_A + clamp01(norm) * (MAX_A - MIN_A);
+      }
     if (M !== null) {
       debugP12Alpha(alpha, M);
     }
