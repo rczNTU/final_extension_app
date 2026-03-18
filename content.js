@@ -1,7 +1,7 @@
 // ---- Params ----
 let FLICKER_HZ = 40;
 let meanAlpha = 0.5;
-let MOD_DEPTH = 1;
+let MOD_DEPTH = 0.8;
 let currentPattern = 1;
 let CHECKER_SIZE = 12; // kept for compatibility (unused now)
 
@@ -873,7 +873,7 @@ function drawFireflies(t1, M = null)  {
       alpha = squareOn ? 0.95 : 0.04;
     } else {
       // Pattern 12 (sine)
-      alpha = clamp01(0.5 + MOD_DEPTH * M);
+      alpha = clamp01(0.495 + 0.455 * M);//hard code for now
     }
     if (M !== null) {
       debugP12Alpha(alpha, M);
