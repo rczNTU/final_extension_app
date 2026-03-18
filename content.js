@@ -1,16 +1,7 @@
-// ===============================
-// Flicker Content Script (Cleaned + Fixed)
-// Patterns:
-// 1 = Full-screen B/W square wave
-// 2 = Full-screen luminance modulation (Andersen interpolated square)
-// 3 = Neutral-grey overlay opacity modulation (Andersen interpolated square)
-// 4 = Full-screen luminance modulation (integrated sine)
-// 5 = Neutral-grey overlay opacity modulation (integrated sine)
-// ===============================
 // ---- Params ----
 let FLICKER_HZ = 40;
-let meanAlpha = 0.3;
-let MOD_DEPTH = 0.3;
+let meanAlpha = 0.5;
+let MOD_DEPTH = 1;
 let currentPattern = 1;
 let CHECKER_SIZE = 12; // kept for compatibility (unused now)
 
@@ -50,7 +41,55 @@ let p1LastLogMs = performance.now();
 let p1PrevSquare = null;
 let p1PrevFrameTime = null;
 let p1JitterCount = 0;
+let p12Frames = 0;
+let p12LastLogMs = performance.now();
+let p12LastM = null;
+let p12ZeroCross = 0;
+function debugP12Alpha(alpha, M) {
+  const now = performance.now();
 
+  if (!debugP12Alpha.last) {
+    debugP12Alpha.last = now;
+    return;
+  }
+
+  if (now - debugP12Alpha.last > 1000) { // 1 second interval
+    console.log(
+      `[P12-alpha] α=${alpha.toFixed(3)} | M=${M.toFixed(3)}`
+    );
+    debugP12Alpha.last = now;
+  }
+}
+function debugPattern12(M) {
+  p12Frames++;
+
+  // Detect zero crossings (sign change)
+  if (p12LastM !== null) {
+    if (p12LastM <= 0 && M > 0) {
+      p12ZeroCross++;
+    }
+  }
+
+  p12LastM = M;
+
+  const now = performance.now();
+  if (now - p12LastLogMs >= 2000) {
+    const elapsed = (now - p12LastLogMs) / 1000;
+
+    const fps = p12Frames / elapsed;
+
+    // Each full sine cycle has 1 upward zero-cross
+    const measuredHz = p12ZeroCross / elapsed;
+
+    console.log(
+      `[P12] fps=${fps.toFixed(1)} | sineHz≈${measuredHz.toFixed(2)} | M=${M.toFixed(3)}`
+    );
+
+    p12Frames = 0;
+    p12ZeroCross = 0;
+    p12LastLogMs = now;
+  }
+}
 const P1_JITTER_THRESH = 0.003; // seconds (3 ms)
 const DISPLAY_GAMMA = 2.2;
 
@@ -66,6 +105,7 @@ const DEFAULT_PARAMS = {
   9: { meanAlpha: 0.3, modDepth: 0.2, freq: 40, checkerSize: 12 },
   10: { meanAlpha: 0.5, modDepth: 0.4, freq: 40, checkerSize: 12 },
   11: { meanAlpha: 0.3, modDepth: 0.2, freq: 40, checkerSize: 12 },
+  12: { meanAlpha: 0.5, modDepth: 0.9, freq: 40, checkerSize: 12 },
 };
 
 // ---- Init ----
@@ -301,7 +341,7 @@ function resizeCanvas() {
     canvas.width = w;
     canvas.height = h;
 
-    if (currentPattern === 11 && running) {
+    if ((currentPattern === 11 || currentPattern === 12) && running) {
   initFireflies(w / dpr, h / dpr, 28);
 }
   }
@@ -628,6 +668,13 @@ function pattern11(dt, t1) {
   }
   return { kind: "fireflies", t1 };
 }
+function pattern12(t0, t1) {
+  return {
+    kind: "fireflies",
+    M: integratedSineM(t0, t1, FLICKER_HZ),
+    t1
+  };
+}
 
 // ===============================
 // Debug logging
@@ -781,7 +828,7 @@ function initFireflies(w, h, count = 28) {
   }
 }
 
-function drawFireflies(t1) {
+function drawFireflies(t1, M = null)  {
   if (!ctx || !canvas || fireflies.length === 0) return;
 
   const dw = canvas.width / dpr;
@@ -820,7 +867,17 @@ function drawFireflies(t1) {
 
     // P1 temporal logic: all fireflies flip together, same frame, same phase
     //The values were chosen to produce large modulation depth (~0.9) while avoiding full disappearance of the stimulus.
-    const alpha = squareOn ? 0.95 : 0.04;
+    let alpha;
+    if (M === null) {
+      // Pattern 11 (square)
+      alpha = squareOn ? 0.95 : 0.04;
+    } else {
+      // Pattern 12 (sine)
+      alpha = clamp01(0.5 + MOD_DEPTH * M);
+    }
+    if (M !== null) {
+      debugP12Alpha(alpha, M);
+    }
 
     const grad = ctx.createRadialGradient(cx, cy, 0, cx, cy, r * 4);
     grad.addColorStop(0,    `hsla(${f.hue}, 90%, 88%, ${alpha.toFixed(3)})`);
@@ -873,6 +930,7 @@ function loop(nowMs) {
     case 9: cmd = pattern9(dt); break;
     case 10: cmd = pattern10(t0, t1); break;
     case 11: cmd = pattern11(dt, t1); break;
+    case 12: cmd = pattern12(t0, t1); break;
     default: cmd = pattern1(dt); break;
   }
 
@@ -899,8 +957,10 @@ drawAdaptiveOverlay(cmd.isHigh);
     drawBorderChecker(cmd.M);
   }
   else if (cmd.kind === "fireflies") {
-  drawFireflies(cmd.t1);  // no dt — accumulator already advanced
-  
+  drawFireflies(cmd.t1, cmd.M);
+
+  if (currentPattern === 11) debugPattern1(dt);
+  if (currentPattern === 12) debugPattern12(cmd.M); 
 }
 
   updateContrastUI();
@@ -938,7 +998,7 @@ function start(pattern = currentPattern) {
   }
   currentPattern = Number(pattern) || 1;
   warnIfUnsafe();
-  if (currentPattern === 11) {
+  if (currentPattern === 11 || currentPattern === 12) {
   ensureCanvas();
   initFireflies(window.innerWidth, window.innerHeight, 100);
 }
