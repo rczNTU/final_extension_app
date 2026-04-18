@@ -1,28 +1,27 @@
-// ---- Params ----
 let FLICKER_HZ = 40;
 let meanAlpha = 0.5;
 let MOD_DEPTH = 0.8;
 let currentPattern = 1;
-let CHECKER_SIZE = 12; // kept for compatibility (unused now)
+let CHECKER_SIZE = 12; // kept for old storage/UI compatibility.. some newer patterns don't use it
 
-// ---- Runtime ----
+// ---- Runtime state for the requestAnimationFrame loop ----
 let running = false;
 let rafId = null;
 let lastNowSec = 0;
 
-let acc = 0;          // pattern1 accumulator
-let squareOn = true;  // pattern1 state
-let phase = 0;        // kept for compatibility/reset
+let acc = 0;          // timing accumulator for square-wave patterns
+let squareOn = true;  // current high/low state for square-wave patterns
+let phase = 0;        // kept for compatibility/reset, even though current patterns don't use it much
 
-// ---- Canvas ----
+//Canvas drawing layer
 let canvas = null;
 let ctx = null;
 let dpr = 1;
 
-// ---- Overlay ----
+// ---- DOM overlay layer for opacity-based patterns ----
 let overlay = null;
 
-// ---- Debug toggles ----
+// ---- Debug toggles.for checking timing during testing ----
 const P4_DEBUG = true;
 const P4_LOG_MS = 2000;
 
@@ -32,8 +31,8 @@ let p4LastLogMs = performance.now();
 const P1_DEBUG = true;
 const P1_LOG_MS = 2000;
 
-//p6
-let adaptiveBaseLinear = 0.5;  // linear luminance center
+// P6 reads the page background first, then uses this as the adaptive luminance base.
+let adaptiveBaseLinear = 0.5;  // linear luminance centre point from detected page background
 
 let p1Frames = 0;
 let p1Flips = 0;
@@ -53,7 +52,7 @@ function debugP12Alpha(alpha, M) {
     return;
   }
 
-  if (now - debugP12Alpha.last > 1000) { // 1 second interval
+  if (now - debugP12Alpha.last > 1000) { // log once per second only, otherwise console spam 
     console.log(
       `[P12-alpha] α=${alpha.toFixed(3)} | M=${M.toFixed(3)}`
     );
@@ -63,7 +62,7 @@ function debugP12Alpha(alpha, M) {
 function debugPattern12(M) {
   p12Frames++;
 
-  // Detect zero crossings (sign change)
+  // Count upward zero-crossings so we can estimate whether the sine is really near target Hz.
   if (p12LastM !== null) {
     if (p12LastM <= 0 && M > 0) {
       p12ZeroCross++;
@@ -78,7 +77,7 @@ function debugPattern12(M) {
 
     const fps = p12Frames / elapsed;
 
-    // Each full sine cycle has 1 upward zero-cross
+    // One full sine cycle gives one upward zero-crossing, so this approximates measured Hz.
     const measuredHz = p12ZeroCross / elapsed;
 
     console.log(
@@ -90,13 +89,14 @@ function debugPattern12(M) {
     p12LastLogMs = now;
   }
 }
-const P1_JITTER_THRESH = 0.003; // seconds (3 ms)
+const P1_JITTER_THRESH = 0.003; // 3 ms tolerance; bigger frame gaps mean timing is getting shaky
 const DISPLAY_GAMMA = 2.2;
 
+// Defaults are stored per pattern so changing one pattern does not anyhow affect another one.
 const DEFAULT_PARAMS = {
-  1: { meanAlpha: 0.5, modDepth: 0.5, freq: 40, checkerSize: 12 }, // max contrast
+  1: { meanAlpha: 0.5, modDepth: 0.5, freq: 40, checkerSize: 12 }, // high contrast full-screen square flicker
   2: { meanAlpha: 0.5, modDepth: 0.5, freq: 40, checkerSize: 12 },
-  3: { meanAlpha: 0.3, modDepth: 0.3, freq: 40, checkerSize: 12 }, // overlay safe
+  3: { meanAlpha: 0.3, modDepth: 0.3, freq: 40, checkerSize: 12 }, // safer overlay range; less likely to clip alpha
   4: { meanAlpha: 0.5, modDepth: 0.4, freq: 40, checkerSize: 12 },
   5: { meanAlpha: 0.3, modDepth: 0.3, freq: 40, checkerSize: 12 },
   6: { meanAlpha: 0.5, modDepth: 0.1, freq: 40, checkerSize: 12 },
@@ -108,7 +108,7 @@ const DEFAULT_PARAMS = {
   12: { meanAlpha: 0.5, modDepth: 0.9, freq: 40, checkerSize: 12 },
 };
 
-// ---- Init ----
+// ---- Init / page bootstrapping ----
 init();
 let stimLayer = null;
 
@@ -122,7 +122,7 @@ function ensureStimLayer() {
     position:"fixed",
     inset:"0",
     pointerEvents:"none",
-    zIndex:"10"   // BELOW fixation UI
+    zIndex:"10"   // below fixation UI, so fixation markers can still sit on top
   });
 
   document.body.appendChild(stimLayer);
@@ -132,9 +132,8 @@ function init() {
   window.addEventListener("resize", resizeCanvas);
 }
 
-// ===============================
 // Storage / Hydration
-// ===============================
+// Load saved Chrome storage first, then patch in any new defaults after code updates.
 function hydrate(shouldStart = false) {
   chrome.storage.local.get(
     ["autoStart", "patternParams", "currentPattern"],
@@ -143,7 +142,7 @@ function hydrate(shouldStart = false) {
 
       const all = s.patternParams || {};
 
-      // ---- INIT missing patterns ----
+      // Fill missing pattern configs for users who installed an older version before.
       let changed = false;
 
       for (const pid in DEFAULT_PARAMS) {
@@ -175,21 +174,21 @@ function hydrate(shouldStart = false) {
   );
 }
 
-// ===============================
 // Contrast UI
-// ===============================
+// Small debug box for checking the intended min/max and Michelson contrast.
+
 function computeContrast() {
   const pat = currentPattern;
 
   let min, max, type;
 
   if (pat === 2 || pat === 4) {
-    // luminance
+    // P2/P4 change actual luminance values.
     min = 0.5 - MOD_DEPTH;
     max = 0.5 + MOD_DEPTH;
     type = "Luminance";
   } else if (pat === 3 || pat === 5) {
-    // alpha overlay
+    // P3/P5 change overlay alpha instead of drawing luminance directly.
     min = meanAlpha - MOD_DEPTH;
     max = meanAlpha + MOD_DEPTH;
     type = "Alpha";
@@ -242,17 +241,16 @@ function updateContrastUI() {
     `Michelson=${c.contrast.toFixed(3)}`;
 }
 
-// ===============================
+
 // Param Safety Warnings
-// ===============================
+// These checks warn when values will clip, because then the requested contrast is not true anymore.
 function warnIfUnsafe() {
   const pat = currentPattern;
   const lines = [];
   const MARGIN = 0.02;
 
-  // ===============================
-  // ALPHA MODULATION (P3, P5)
-  // ===============================
+  // ALPHA MODULATION (P3, P5, P6)
+  // Alpha must stay inside [0, 1], otherwise browser clamps it quietly.
   const alphaMin = meanAlpha - MOD_DEPTH;
   const alphaMax = meanAlpha + MOD_DEPTH;
 
@@ -272,9 +270,8 @@ function warnIfUnsafe() {
     }
   }
 
-  // ===============================
-  // LUMINANCE MODULATION (P2, P4)
-  // ===============================
+  // LUMINANCE MODULATION (P2, P4, P7, P10)
+  // Linear luminance also has to stay inside [0, 1] for a clean stimulus.
   const lumMin = 0.5 - MOD_DEPTH;
   const lumMax = 0.5 + MOD_DEPTH;
 
@@ -303,9 +300,8 @@ function warnIfUnsafe() {
   }
 }
 
-// ===============================
 // DOM / Canvas / Overlay
-// ===============================
+// Canvas handles pixel drawing ==> overlay handles simple whole-screen opacity changes.
 function ensureCanvas() {
   if (canvas) return;
 
@@ -354,7 +350,7 @@ function ensureOverlay() {
   Object.assign(overlay.style, {
     position: "fixed",
     inset: "0",
-    background: "rgb(128,128,128)", // neutral grey
+    background: "rgb(128,128,128)", // neutral grey base for alpha flicker, not too biased either way
     pointerEvents: "none",
     zIndex: "2",
     opacity: "0",
@@ -366,6 +362,7 @@ function ensureOverlay() {
 
 // ===============================
 // Utils
+// Small maths helpers..to be used by multiple patterns.
 // ===============================
 function clamp01(x) {
   return x < 0 ? 0 : x > 1 ? 1 : x;
@@ -380,6 +377,7 @@ function squareWave(t, f) {
 }
 
 function integratedSquareM(t0, t1, f, steps = 8) {
+  // Approximate the square wave average across this frame =>browser frames are slower than 40 Hz.
   let sum = 0;
   const dt = (t1 - t0) / steps;
 
@@ -387,10 +385,11 @@ function integratedSquareM(t0, t1, f, steps = 8) {
     const t = t0 + dt * (i + 0.5);
     sum += squareWave(t, f);
   }
-  return sum / steps; // [-1, 1]
+  return sum / steps; // average modulation stays in [-1, 1]
 }
 
 function integratedSineM(t0, t1, f) {
+  // Exact sine average over one frame, so high-frequency flicker does not depend only on frame start.
   const dt = t1 - t0;
   if (dt <= 0 || f <= 0) return 0;
 
@@ -398,19 +397,18 @@ function integratedSineM(t0, t1, f) {
   const denom = w * dt;
 
   if (denom < 1e-6) return Math.sin(w * t1);
-  return (Math.cos(w * t0) - Math.cos(w * t1)) / denom; // [-1, 1]
+  return (Math.cos(w * t0) - Math.cos(w * t1)) / denom; // frame-averaged modulation in [-1, 1]
 }
 
-// ===============================
 // Drawers
-// ===============================
+// These functions only render - the timing decision already happened in the pattern functions.
 function drawBorderChecker(M) {
   if (!ctx || !canvas) return;
 
   const size = Math.max(2, CHECKER_SIZE * dpr);
 
   const m = Math.max(-1, Math.min(1, M));
-  // const L = clamp01(0.5 + MOD_DEPTH * m);
+  // Previous fixed-centre version kept for reference : const L = clamp01(0.5 + MOD_DEPTH * m);
   const L = clamp01(meanAlpha + MOD_DEPTH * m);
   const encoded = gammaEncodeLinear01(L);
   const v = Math.round(encoded * 255);
@@ -425,7 +423,7 @@ function drawBorderChecker(M) {
   for (let y = 0; y < h; y += size) {
     for (let x = 0; x < w; x += size) {
 
-      // FIXED CONDITION
+      // Only draw squares touching the border band; centre content remains visible.
       const inBorder =
         x < border ||
         x + size > w - border ||
@@ -447,7 +445,7 @@ function drawCheckerboardAlpha(isHigh) {
 
   const size = Math.max(2, CHECKER_SIZE * dpr);
 
-  // alpha modulation
+  // Here the alpha changes, while the checker colours stay black/white.
   const alpha = clamp01(
     meanAlpha + (isHigh ? MOD_DEPTH : -MOD_DEPTH)
   );
@@ -460,7 +458,7 @@ function drawCheckerboardAlpha(isHigh) {
     for (let x = 0; x < canvas.width; x += size) {
       let isWhite = ((x / size + y / size) % 2) === 0;
 
-      // phase reversal
+      // reverses checker phase, meaning black and white swap places.
       if (isHigh) isWhite = !isWhite;
 
       ctx.fillStyle = isWhite ? "white" : "black";
@@ -477,7 +475,7 @@ function drawCheckerboard(M) {
 
   const m = Math.max(-1, Math.min(1, M));
 
-  // luminance modulation (like pattern4)
+  // Same luminance modulation idea as P4, but applied to checkerboard tiles.
   const L = clamp01(0.5 + MOD_DEPTH * m);
   const encoded = gammaEncodeLinear01(L);
   const v = Math.round(encoded * 255);
@@ -501,7 +499,7 @@ function drawCheckerboardPhase(isHigh) {
     for (let x = 0; x < canvas.width; x += size) {
       let isWhite = ((x / size + y / size) % 2) === 0;
 
-      // flip polarity
+      // Flip polarity on high state: white becomes black and black becomes white.
       if (isHigh) isWhite = !isWhite;
 
       ctx.fillStyle = isWhite ? "white" : "black";
@@ -527,17 +525,17 @@ function getComplementaryRGB() {
     const g = parseInt(rgb[1]) / 255;
     const b = parseInt(rgb[2]) / 255;
 
-    // Perceived luminance (sRGB approximate)
+    // Quick perceived-luminance estimate in sRGB; good enough for choosing a visible complement.
     const lum = 0.299 * r + 0.587 * g + 0.114 * b;
 
     if (lum < 0.15) {
-      // Very dark / black page → deep saturated red, less alarming than white
+      // Very dark page: use muted red, visible but not so fierce like full white.
       return { r: 100, g: 20, b: 20 };
     } else if (lum > 0.85) {
-      // Very light / white page → deep indigo
+      // Very light page: use deep indigo so the overlay still stands out.
       return { r: 40, g: 20, b: 160 };
     } else {
-      // Mid-tone → true complementary inversion
+      // Mid-tone page: simple complementary inversion works okay.
       return {
         r: Math.round((1 - r) * 255),
         g: Math.round((1 - g) * 255),
@@ -549,7 +547,7 @@ function getComplementaryRGB() {
   }
 }
 
-// Cache it on start so we're not querying DOM every frame
+// Cache on start so we don't keep querying DOM styles every frame, quite wasteful otherwise.
 let complementaryColor = { r: 128, g: 128, b: 128 };
 
 function drawAdaptiveOverlay(isHigh) {
@@ -584,10 +582,10 @@ function drawFullScreenLuminance(M) {
   ctx.fillRect(0, 0, canvas.width, canvas.height);
 }
 
-// ===============================
-// Patterns 1–5
-// ===============================
+// Pattern command builders
+// Each pattern returns a small draw command; this keeps timing logic separate from canvas drawing.
 function pattern1(dt) {
+  // P1: full-screen black/white square flicker using an accumulator for stable flips.
   acc += dt;
 
   const halfPeriod = 1 / (2 * FLICKER_HZ);
@@ -601,21 +599,26 @@ function pattern1(dt) {
 }
 
 function pattern2(t0, t1) {
+  // P2: square-wave luminance, integrated over the current browser frame.
   return { kind: "brightness", M: integratedSquareM(t0, t1, FLICKER_HZ) };
 }
 
 function pattern3(t0, t1) {
+  // P3: square-wave overlay alpha, same timing as P2 but rendered through the overlay div.
   return { kind: "overlayAlpha", M: integratedSquareM(t0, t1, FLICKER_HZ) };
 }
 
 function pattern4(t0, t1) {
+  // P4: sine-wave luminance, frame-averaged so it behaves nicer at high Hz.
   return { kind: "brightness", M: integratedSineM(t0, t1, FLICKER_HZ) };
 }
 
 function pattern5(t0, t1) {
+  // P5: sine-wave overlay alpha.
   return { kind: "overlayAlpha", M: integratedSineM(t0, t1, FLICKER_HZ) };
 }
 function pattern6(dt) {
+  // P6: adaptive overlay square flicker, using the complementary colour chosen at start.
   acc += dt;
 
   const halfPeriod = 1 / (2 * FLICKER_HZ);
@@ -628,10 +631,12 @@ function pattern6(dt) {
   return { kind: "adaptiveBW", isHigh: squareOn };
 }
 function pattern7(t0, t1) {
+  // P7: sine-wave checkerboard luminance.
   return { kind: "checker", M: integratedSineM(t0, t1, FLICKER_HZ) };
 }
 
 function pattern8(dt) {
+  // P8: checkerboard phase reversal using square-wave timing.
   acc += dt;
 
   const halfPeriod = 1 / (2 * FLICKER_HZ);
@@ -644,6 +649,7 @@ function pattern8(dt) {
   return { kind: "checkerPhase", isHigh: squareOn };
 }
 function pattern9(dt) {
+  // P9: checkerboard alpha square flicker.
   acc += dt;
 
   const halfPeriod = 1 / (2 * FLICKER_HZ);
@@ -656,10 +662,11 @@ function pattern9(dt) {
   return { kind: "checkerAlpha", isHigh: squareOn };
 }
 function pattern10(t0, t1) {
+  // P10: sine-wave checkerboard only around the screen border.
   return { kind: "borderChecker", M: integratedSineM(t0, t1, FLICKER_HZ) };
 }
 function pattern11(dt, t1) {
-  // Exact P1 accumulator — jitter-compensated, phase-stable
+  // P11: fireflies use the exact same accumulator as P1, so timing stays phase-stable.
   acc += dt;
   const halfPeriod = 1 / (2 * FLICKER_HZ);
   while (acc >= halfPeriod) {
@@ -669,6 +676,7 @@ function pattern11(dt, t1) {
   return { kind: "fireflies", t1 };
 }
 function pattern12(t0, t1) {
+  // P12: fireflies use sine modulation instead of square flipping.
   return {
     kind: "fireflies",
     M: integratedSineM(t0, t1, FLICKER_HZ),
@@ -676,9 +684,8 @@ function pattern12(t0, t1) {
   };
 }
 
-// ===============================
 // Debug logging
-// ===============================
+// Console checks for timing/contrast while testing; not part of the actual stimulus output.
 function logDetectedBackground() {
   try {
     const el = document.body || document.documentElement;
@@ -686,7 +693,7 @@ function logDetectedBackground() {
 
     let bg = style.backgroundColor;
 
-    // Walk up DOM if transparent
+    // If body is transparent, walk upward until we find a real background colour.
     let current = el;
     while (
       bg === "rgba(0, 0, 0, 0)" ||
@@ -724,7 +731,7 @@ function logDetectedBackground() {
       0.7152 * G +
       0.0722 * B;
 
-    adaptiveBaseLinear = luminance; // 🔴 STORE GLOBALLY
+    adaptiveBaseLinear = luminance; // store globally for P6/adaptive debug use
 
     const type = luminance < 0.5 ? "DARK" : "LIGHT";
 
@@ -797,10 +804,9 @@ function debugPattern4(M, dt) {
     p4LastLogMs = now;
   }
 }
-//====
-// ===============================
-// Pattern 11 – Fireflies
-// ===============================
+
+// Pattern 11/12 - Fireflies
+// Fireflies stay near the border, so the main page content is still readable.
 let fireflies = [];
 
 function initFireflies(w, h, count = 28) {
@@ -819,10 +825,10 @@ function initFireflies(w, h, count = 28) {
       x, y,
       vx: (Math.random() - 0.5) * 0.4,
       vy: (Math.random() - 0.5) * 0.4,
-      phase: Math.random() * Math.PI * 2,      // envelope phase only
+      phase: Math.random() * Math.PI * 2,      // envelope phase only; brightness timing is shared globally
       glowSpeed: 0.3 + Math.random() * 0.7,
       radius: 1.2 + Math.random() * 1.8,
-      // radius: 4 + Math.random() * 4,
+      // Bigger demo option: radius: 4 + Math.random() * 4
       hue: 48 + Math.random() * 28,
     });
   }
@@ -836,7 +842,7 @@ function drawFireflies(t1, M = null)  {
   const band = Math.min(dw, dh) * 0.10;
 
   for (const f of fireflies) {
-    // Organic drift
+    // Small random drift so the fireflies don't look too mechanical.
     f.vx += (Math.random() - 0.5) * 0.05;
     f.vy += (Math.random() - 0.5) * 0.05;
     f.vx = Math.max(-0.7, Math.min(0.7, f.vx));
@@ -844,7 +850,7 @@ function drawFireflies(t1, M = null)  {
     f.x += f.vx;
     f.y += f.vy;
 
-    // Border confinement
+    // Push fireflies back toward the edge when they wander too far inward.
     const tooFarIn =
       f.x > band && f.x < dw - band &&
       f.y > band && f.y < dh - band;
@@ -859,26 +865,26 @@ function drawFireflies(t1, M = null)  {
     f.x = Math.max(1, Math.min(dw - 1, f.x));
     f.y = Math.max(1, Math.min(dh - 1, f.y));
 
-    // Slow envelope — size and shape only, never brightness
+    // Slow envelope controls size/shape only; brightness must follow the flicker timing.
     const envelope = 0.5 + 0.5 * Math.sin(2 * Math.PI * f.glowSpeed * t1 + f.phase);
     const r = (f.radius + envelope * 3) * dpr;
     const cx = f.x * dpr;
     const cy = f.y * dpr;
 
-    // P1 temporal logic: all fireflies flip together, same frame, same phase
-    //The values were chosen to produce large modulation depth (~0.9) while avoiding full disappearance of the stimulus.
+    // Temporal logic: all fireflies brighten/dim together, same frame and same phase.
+    // These alpha values give strong modulation (~0.9) but don't let the stimulus fully disappear.
     let alpha;
     if (M === null) {
-      // Pattern 11 (square)
+      // Pattern 11: square-wave fireflies.
       alpha = squareOn ? 0.95 : 0.04;
     } else {
-        // Pattern 12 (sine) — matched contrast to P11
+        // Pattern 12: sine-wave fireflies, contrast roughly matched to P11.
 
         const MIN_A = 0.04;
         const MAX_A = 0.95;
-        const GAIN = 1.25; // compensates integration loss
+        const GAIN = 1.25; // boosts back what frame integration reduces
 
-        const norm = ((M * GAIN) + 1) / 2;   // [-1,1]===[0,1] with boost
+        const norm = ((M * GAIN) + 1) / 2;   // map [-1, 1] to [0, 1], then clamp after boost
         alpha = MIN_A + clamp01(norm) * (MAX_A - MIN_A);
       }
     if (M !== null) {
@@ -900,9 +906,8 @@ function drawFireflies(t1, M = null)  {
     ctx.fill();
   }
 }
-// ===============================
 // Main Loop
-// ===============================
+// One RAF tick: measure time, choose pattern command, then draw it.
 function loop(nowMs) {
   if (!running) return;
   if (ctx && canvas) {
@@ -940,7 +945,7 @@ function loop(nowMs) {
     default: cmd = pattern1(dt); break;
   }
 
-  // Execute draw command
+  // Execute draw command from the pattern; timing and drawing stay nicely separated.
   if (cmd.kind === "fullBW") {
     drawFullScreenBW(cmd.isWhite);
     debugPattern1(dt);
@@ -975,6 +980,7 @@ drawAdaptiveOverlay(cmd.isHigh);
 
 // ===============================
 // Start / Stop
+// Public controls used by popup messages, hotkeys, and page messages.
 // ===============================
 function resetRuntimeState() {
   acc = 0;
@@ -982,7 +988,7 @@ function resetRuntimeState() {
   phase = 0;
   lastNowSec = 0;
 
-  // P1 debug
+  // Reset P1 debug counters so previous runs don't pollute the next measurement.
   p1Frames = 0;
   p1Flips = 0;
   p1PrevSquare = null;
@@ -990,7 +996,7 @@ function resetRuntimeState() {
   p1JitterCount = 0;
   p1LastLogMs = performance.now();
 
-  // P4 debug
+  // Reset P4 debug counters too; fresh run, fresh logs.
   p4Frames = 0;
   p4LastLogMs = performance.now();
 }
@@ -1018,7 +1024,7 @@ function start(pattern = currentPattern) {
     ensureOverlay();
     if (overlay) overlay.style.opacity = "0";
 
-    // Clear canvas if exists
+    // Overlay patterns use the div layer, so clear any old canvas drawing if it exists.
     if (canvas && ctx) ctx.clearRect(0, 0, canvas.width, canvas.height);
   } else {
     ensureCanvas();
@@ -1047,18 +1053,12 @@ function stop() {
   document.documentElement.style.filter = "";
 }
 
-// ===============================
-// Messaging
-// ===============================
-// ===============================
-// Keyboard Shortcuts
-// ===============================
-// ===============================
+// Extension and keyboard controls
+// Popup/service-worker messages come later; hotkeys are here for quick manual testing.
 // Keyboard Shortcuts (Cross-Platform)
-// ===============================
 document.addEventListener("keydown", (e) => {
 
-  // Avoid triggering while typing
+  // Don't hijack shortcuts while the user is typing into form fields.
   const tag = document.activeElement?.tagName;
   if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
 
@@ -1068,7 +1068,7 @@ document.addEventListener("keydown", (e) => {
   if (!ctrl || !shift) return;
 
   // ---------------------------
-  // START
+  // START current pattern.
   // Ctrl + Shift + S
   // ---------------------------
   if (e.key.toLowerCase() === "s") {
@@ -1078,7 +1078,7 @@ document.addEventListener("keydown", (e) => {
   }
 
   // ---------------------------
-  // STOP
+  // STOP current pattern.
   // Ctrl + Shift + X
   // ---------------------------
   if (e.key.toLowerCase() === "x") {
@@ -1088,7 +1088,7 @@ document.addEventListener("keydown", (e) => {
   }
 
   // ---------------------------
-  // Pattern switching
+  // Pattern switching for P1 to P9.
   // Ctrl + Shift + 1..9
   // ---------------------------
   const num = parseInt(e.key);
@@ -1103,7 +1103,7 @@ document.addEventListener("keydown", (e) => {
   }
 
   // ---------------------------
-  // Pattern 10
+  // Pattern 10 shortcut.
   // Ctrl + Shift + 0
   // ---------------------------
   if (e.key === "0") {
@@ -1115,8 +1115,8 @@ document.addEventListener("keydown", (e) => {
   }
 
   // ---------------------------
-  // Pattern 11
-  // Ctrl + Shift + -
+  // Pattern 11 shortcut.
+  // Ctrl + Shift + L
   // ---------------------------
   if (e.key === "L") {
     console.log("[HOTKEY] Pattern 11");
@@ -1213,6 +1213,7 @@ chrome.runtime.onMessage.addListener((msg) => {
 });
 // ===============================
 // Listen for page messages
+// This bridge lets page scripts start/stop or switch patterns without using Chrome APIs directly.
 // ===============================
 window.addEventListener("message", (event) => {
 
