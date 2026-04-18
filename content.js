@@ -878,7 +878,7 @@ function drawFireflies(t1, M = null)  {
         const MAX_A = 0.95;
         const GAIN = 1.25; // compensates integration loss
 
-        const norm = ((M * GAIN) + 1) / 2;   // [-1,1] → [0,1] with boost
+        const norm = ((M * GAIN) + 1) / 2;   // [-1,1]===[0,1] with boost
         alpha = MIN_A + clamp01(norm) * (MAX_A - MIN_A);
       }
     if (M !== null) {
