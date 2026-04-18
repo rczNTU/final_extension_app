@@ -1,11 +1,3 @@
-// ===============================
-// MINIMAL CONTENT SCRIPT (P1–P4)
-// - Pattern 3/4 use integrated square over real t0..t1
-// - Pattern 4 uses alphaScale + meanScale to reduce opacity
-// - Keeps storage hydrate + messaging
-// - Removes all debug/jitter logging
-// ===============================
-
 // ---- Params (defaults; overridden by chrome.storage) ----
 let FLICKER_HZ = 40;
 let meanAlpha = 0.3;
@@ -185,7 +177,7 @@ function drawFullScreenBW(isWhite) {
   ctx.fillRect(0, 0, canvas.width, canvas.height);
 }
 // ---- Patterns ----
-//BRIGHTNESS IF FIXED FOR P1
+//BRIGHTNESS Is FIXED FOR P1
 function pattern1(dt) {
   acc += dt;
 
@@ -251,7 +243,6 @@ function pattern4(t0, t1) {
   if (P4_DEBUG) {
     p4Frames++;
 
-    // -------- robust sign detection --------
     const EPS = 1e-6;
     const s = M > EPS ? 1 : (M < -EPS ? -1 : 0);
 
@@ -271,7 +262,7 @@ function pattern4(t0, t1) {
     else if (absM > 0.1) p4M_mid++;
     else p4M_near0++;
 
-    // -------- true cycles (ground truth) --------
+    // true cycles
     p4CycleAccum += (t1 - t0) * FLICKER_HZ;
 
     const now = performance.now();
@@ -299,7 +290,7 @@ function pattern4(t0, t1) {
         `meanAlpha=${meanAlpha} modDepth=${MOD_DEPTH} freq=${FLICKER_HZ}`
       );
 
-      // -------- reset window --------
+      // reset window
       p4Frames = 0;
       p4SignFlips = 0;
       p4M_sum = 0;
@@ -321,7 +312,7 @@ function pattern4(t0, t1) {
   };
 }
 
-// ---- Main loop ----
+// Main loop 
 function loop(nowMs) {
   if (!running) return;
 
@@ -344,13 +335,13 @@ function loop(nowMs) {
   if (P1_DEBUG && currentPattern === 1 && cmd.kind === "fullBW") {
     p1Frames++;
 
-    // ----   actual visible  flicker flips ----
+    // actual visible  flicker flips
     if (p1PrevSquare !== null && cmd.isWhite !== p1PrevSquare) {
       p1Flips++;
     }
     p1PrevSquare = cmd.isWhite;
 
-    // ---- frame timing ----
+    //frame timing 
     if (p1PrevFrameTime !== null) {
       const frameDt = t1 - p1PrevFrameTime;
       const ideal = 1 / 60;
@@ -371,7 +362,7 @@ function loop(nowMs) {
       // what user actually sees
       const estHz_sig = (p1Flips / 2) / secs;
 
-      // what you intended
+      // intended cycles
       const estHz_true = p1CycleAccum / secs;
 
       const jitterPct = (p1JitterCount / p1Frames) * 100;
@@ -383,7 +374,7 @@ function loop(nowMs) {
         `jitter=${jitterPct.toFixed(1)}% | freq=${FLICKER_HZ}`
       );
 
-      // ---- reset ----
+      // reset 
       p1Frames = 0;
       p1Flips = 0;
       p1CycleAccum = 0;
@@ -406,7 +397,7 @@ function loop(nowMs) {
   rafId = requestAnimationFrame(loop);
 }
 
-// ---- Start/Stop ----
+// Start/Stop
 function start(pattern = currentPattern) {
   ensureCanvas();
   resizeCanvas();
